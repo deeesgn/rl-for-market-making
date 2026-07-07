@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from rl_mm.data.archive import inspect_csv_archive
+from rl_mm.data.archive import inspect_csv_archive, inspect_jsonl_data_archive
 from rl_mm.data.bybit_downloader import build_download_plan, download_file, load_bybit_config
 
 
@@ -47,10 +47,25 @@ def main() -> None:
 
     timeout = float(config.get("timeout_seconds", 30))
     result = download_file(item, timeout=timeout)
-    inspection = inspect_csv_archive(
-        result.plan.raw_path,
-        extract_dir=result.plan.raw_path.parent / "extracted",
-    )
+    extract_dir = result.plan.raw_path.parent / "extracted"
+    if args.dataset == "orderbook":
+        inspection = inspect_jsonl_data_archive(
+            result.plan.raw_path,
+            extract_dir=extract_dir,
+        )
+        print("Bybit orderbook archive verification")
+        print(f"local_zip_path: {inspection.archive_path}")
+        print(f"detected_archive_type: {inspection.archive_type}")
+        print(f"extracted_file_name: {inspection.read_path.name}")
+        print(f"read_file_path: {inspection.read_path}")
+        print(f"detected_keys: {json.dumps(inspection.detected_keys)}")
+        print(f"first_snapshot_bid_levels: {inspection.first_bid_levels}")
+        print(f"first_snapshot_ask_levels: {inspection.first_ask_levels}")
+        print("first_5_json_objects:")
+        print(json.dumps(inspection.first_objects, indent=2))
+        return
+
+    inspection = inspect_csv_archive(result.plan.raw_path, extract_dir=extract_dir)
 
     print("Bybit archive verification")
     print(f"local_file_path: {inspection.archive_path}")

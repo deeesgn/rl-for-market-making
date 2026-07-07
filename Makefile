@@ -1,4 +1,4 @@
-.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run bybit-download-dry-run bybit-download-sample discover-bybit-urls verify-bybit-archive-dry-run verify-bybit-archive-sample inspect-bybit-sample convert-bybit-sample convert-bybit-verified show-splits check-bybit-sample build-bybit-manifest lint
+.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run bybit-download-dry-run bybit-download-sample discover-bybit-urls discover-bybit-orderbook-urls discover-bybit-orderbook-dates verify-bybit-archive-dry-run verify-bybit-archive-sample verify-bybit-orderbook-dry-run verify-bybit-orderbook-sample inspect-bybit-sample convert-bybit-sample convert-bybit-verified show-splits check-bybit-sample build-bybit-manifest lint
 
 install:
 	python -m pip install --upgrade pip
@@ -49,11 +49,23 @@ bybit-download-sample:
 discover-bybit-urls:
 	python scripts/discover_bybit_urls.py --config configs/data_bybit.yaml --dataset trades --symbol BTCUSDT --date 2024-01-01
 
+discover-bybit-orderbook-urls:
+	python scripts/discover_bybit_urls.py --config configs/data_bybit.yaml --dataset orderbook --symbol BTCUSDT --date 2025-05-01
+
+discover-bybit-orderbook-dates:
+	python scripts/discover_bybit_urls.py --config configs/data_bybit.yaml --dataset orderbook --symbol BTCUSDT --dates 2024-01-01,2024-09-02,2025-05-01
+
 verify-bybit-archive-dry-run:
 	python scripts/verify_bybit_archive.py --config configs/data_bybit.yaml --dataset trades --symbol BTCUSDT --date 2024-01-01 --output-dir data/raw/bybit/verify
 
 verify-bybit-archive-sample:
 	python scripts/verify_bybit_archive.py --config configs/data_bybit.yaml --dataset trades --symbol BTCUSDT --date 2024-01-01 --output-dir data/raw/bybit/verify --execute
+
+verify-bybit-orderbook-dry-run:
+	python scripts/verify_bybit_archive.py --config configs/data_bybit.yaml --dataset orderbook --symbol BTCUSDT --date 2025-05-01 --output-dir data/raw/bybit/verify --template-name quote_saver_linear_ob500_zip
+
+verify-bybit-orderbook-sample:
+	python scripts/verify_bybit_archive.py --config configs/data_bybit.yaml --dataset orderbook --symbol BTCUSDT --date 2025-05-01 --output-dir data/raw/bybit/verify --template-name quote_saver_linear_ob500_zip --execute
 
 inspect-bybit-sample:
 	python scripts/inspect_bybit_data.py --path data/sample/bybit_trades_sample.csv --dataset trades

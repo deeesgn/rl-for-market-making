@@ -3,8 +3,10 @@
 from rl_mm.data.archive import (
     ArchiveError,
     ArchiveInspection,
+    JsonLinesArchiveInspection,
     detect_archive_type,
     inspect_csv_archive,
+    inspect_jsonl_data_archive,
 )
 from rl_mm.data.bybit_downloader import (
     BybitDownloadError,
@@ -33,6 +35,7 @@ from rl_mm.data.schema import (
 __all__ = [
     "ArchiveError",
     "ArchiveInspection",
+    "JsonLinesArchiveInspection",
     "BybitDownloadPlan",
     "BybitDownloadError",
     "BybitDownloadResult",
@@ -51,6 +54,7 @@ __all__ = [
     "download_file",
     "download_plan",
     "inspect_csv_archive",
+    "inspect_jsonl_data_archive",
     "load_bybit_config",
     "normalize_records",
     "probe_url_candidate",

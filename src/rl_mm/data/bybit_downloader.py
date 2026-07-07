@@ -305,18 +305,25 @@ def probe_url_candidate(
 
     try:
         response = head(candidate.url, timeout=timeout, allow_redirects=True)
-        if response.status_code in {405, 501}:
+        if response.status_code >= 400:
             return probe_url_candidate_with_get(candidate, timeout=timeout, request_get=get)
         return build_probe_result(candidate, method="HEAD", response=response)
     except requests.RequestException as error:
+        fallback_result = probe_url_candidate_with_get(
+            candidate,
+            timeout=timeout,
+            request_get=get,
+        )
+        if fallback_result.error:
+            return fallback_result
         return BybitUrlProbeResult(
-            candidate=candidate,
-            method="HEAD",
-            status_code=None,
-            content_type=None,
-            content_length=None,
-            working=False,
-            error=str(error),
+            candidate=fallback_result.candidate,
+            method=fallback_result.method,
+            status_code=fallback_result.status_code,
+            content_type=fallback_result.content_type,
+            content_length=fallback_result.content_length,
+            working=fallback_result.working,
+            error=f"HEAD failed: {error}",
         )
 
 

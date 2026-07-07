@@ -9,6 +9,7 @@ from rl_mm.data.bybit_downloader import (
     build_url_candidates,
     probe_url_candidate,
 )
+from scripts.discover_bybit_urls import parse_dates
 
 
 class FakeProbeResponse:
@@ -24,6 +25,15 @@ class FakeProbeResponse:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_parse_discovery_dates() -> None:
+    assert parse_dates("2025-05-01", None) == ["2025-05-01"]
+    assert parse_dates(None, "2024-01-01, 2024-09-02,2025-05-01") == [
+        "2024-01-01",
+        "2024-09-02",
+        "2025-05-01",
+    ]
 
 
 def test_build_url_candidates_uses_named_config_templates() -> None:
@@ -53,6 +63,33 @@ def test_build_url_candidates_uses_named_config_templates() -> None:
     ]
     assert candidates[0].url == "https://example.test/BTCUSDT/BTCUSDT-2024-01-01.zip"
     assert candidates[1].url == "https://mirror.test/btcusdt/BTCUSDT20240101.csv.gz"
+
+
+def test_build_orderbook_url_candidate_uses_quote_saver_template() -> None:
+    candidates = build_url_candidates(
+        {
+            "candidate_url_templates": {
+                "orderbook": {
+                    "quote_saver_linear_ob500_zip": {
+                        "filename_template": "{date}_{symbol}_ob500.data.zip",
+                        "url_template": (
+                            "https://quote-saver.bycsi.com/orderbook/linear/"
+                            "{symbol}/{filename}"
+                        ),
+                    }
+                }
+            }
+        },
+        dataset="orderbook",
+        symbol="BTCUSDT",
+        date_value="2025-05-01",
+    )
+
+    assert candidates[0].filename == "2025-05-01_BTCUSDT_ob500.data.zip"
+    assert candidates[0].url == (
+        "https://quote-saver.bycsi.com/orderbook/linear/"
+        "BTCUSDT/2025-05-01_BTCUSDT_ob500.data.zip"
+    )
 
 
 def test_probe_url_candidate_uses_head_first() -> None:
@@ -133,7 +170,7 @@ def test_probe_url_candidate_falls_back_to_streaming_get_when_head_not_supported
     ]
 
 
-def test_probe_url_candidate_reports_request_errors() -> None:
+def test_probe_url_candidate_falls_back_to_get_after_head_request_error() -> None:
     candidate = BybitUrlCandidate(
         name="broken",
         dataset="trades",
@@ -146,9 +183,15 @@ def test_probe_url_candidate_reports_request_errors() -> None:
     def fake_head(url: str, *, timeout: float, allow_redirects: bool) -> FakeProbeResponse:
         raise requests.ConnectionError("connection failed")
 
-    result = probe_url_candidate(candidate, request_head=fake_head)
+    def fake_get(url: str, *, timeout: float, stream: bool) -> FakeProbeResponse:
+        return FakeProbeResponse(
+            200,
+            headers={"content-type": "application/zip", "content-length": "789"},
+        )
 
-    assert result.method == "HEAD"
-    assert result.status_code is None
-    assert result.working is False
-    assert result.error == "connection failed"
+    result = probe_url_candidate(candidate, request_head=fake_head, request_get=fake_get)
+
+    assert result.method == "GET"
+    assert result.status_code == 200
+    assert result.working is True
+    assert result.error == "HEAD failed: connection failed"

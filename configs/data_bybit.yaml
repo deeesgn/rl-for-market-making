@@ -13,13 +13,13 @@ timeout_seconds: 30
 # .csv.gz, or .zip without changing downloader code.
 filename_templates:
   trades: "{symbol}{date}.csv.gz"
-  orderbook: "{symbol}_{dataset}_{date}.csv.gz"
+  orderbook: "{date}_{symbol}_ob500.data.zip"
 # URL templates are intentionally configurable because Bybit archive paths can
 # change by market, dataset, and archive format. Supported placeholders:
 # {symbol}, {symbol_lower}, {dataset}, {date}, {date_compact}, {filename}
 url_templates:
   trades: "https://public.bybit.com/trading/{symbol}/{filename}"
-  orderbook: "https://public.bybit.com/orderbook/{symbol}/{filename}"
+  orderbook: "https://quote-saver.bycsi.com/orderbook/linear/{symbol}/{filename}"
 candidate_url_templates:
   trades:
     public_trading_symbol_dataset_date_csv_gz:
@@ -35,6 +35,9 @@ candidate_url_templates:
       filename_template: "{date}_{symbol}.csv.gz"
       url_template: "https://public.bybit.com/trading/{symbol}/{filename}"
   orderbook:
+    quote_saver_linear_ob500_zip:
+      filename_template: "{date}_{symbol}_ob500.data.zip"
+      url_template: "https://quote-saver.bycsi.com/orderbook/linear/{symbol}/{filename}"
     public_orderbook_symbol_dataset_date_csv_gz:
       filename_template: "{symbol}_{dataset}_{date}.csv.gz"
       url_template: "https://public.bybit.com/orderbook/{symbol}/{filename}"

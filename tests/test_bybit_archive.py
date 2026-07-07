@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import gzip
+import json
 import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from rl_mm.data.archive import ArchiveError, detect_archive_type, inspect_csv_archive
+from rl_mm.data.archive import (
+    ArchiveError,
+    detect_archive_type,
+    inspect_csv_archive,
+    inspect_jsonl_data_archive,
+)
 from scripts.verify_bybit_archive import main as verify_archive_main
 
 CSV_TEXT = "\n".join(
@@ -59,13 +65,64 @@ def test_inspect_zip_archive_extracts_first_csv(tmp_path: Path) -> None:
     assert inspection.columns == ["timestamp", "price", "size"]
 
 
+def test_inspect_zip_archive_extracts_data_jsonl_preview(tmp_path: Path) -> None:
+    path = tmp_path / "orderbook.zip"
+    extract_dir = tmp_path / "extracted"
+    first_object = {
+        "topic": "orderbook.500.BTCUSDT",
+        "type": "snapshot",
+        "ts": 1746057600000,
+        "cts": 1746057600000,
+        "data": {
+            "s": "BTCUSDT",
+            "b": [["95000.0", "1.5"], ["94999.5", "0.8"]],
+            "a": [["95000.5", "1.1"]],
+            "u": 123,
+            "seq": 456,
+        },
+    }
+    second_object = {
+        "topic": "orderbook.500.BTCUSDT",
+        "type": "delta",
+        "ts": 1746057601000,
+        "cts": 1746057601000,
+        "data": {"s": "BTCUSDT", "b": [], "a": [], "u": 124, "seq": 457},
+    }
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "nested/2025-05-01_BTCUSDT_ob500.data",
+            "\n".join(json.dumps(item) for item in [first_object, second_object]),
+        )
+
+    inspection = inspect_jsonl_data_archive(path, extract_dir=extract_dir)
+
+    assert inspection.archive_type == "zip"
+    assert inspection.read_path == extract_dir / "2025-05-01_BTCUSDT_ob500.data"
+    assert inspection.first_objects == [first_object, second_object]
+    assert inspection.detected_keys == {
+        "top_level": ["cts", "data", "topic", "ts", "type"],
+        "data": ["a", "b", "s", "seq", "u"],
+    }
+    assert inspection.first_bid_levels == 2
+    assert inspection.first_ask_levels == 1
+
+
 def test_zip_without_csv_raises_clear_error(tmp_path: Path) -> None:
     path = tmp_path / "sample.zip"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("notes.txt", "not csv")
 
-    with pytest.raises(ArchiveError, match="No CSV file"):
+    with pytest.raises(ArchiveError, match="No .csv file"):
         inspect_csv_archive(path)
+
+
+def test_zip_without_data_raises_clear_error(tmp_path: Path) -> None:
+    path = tmp_path / "orderbook.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("notes.txt", "not data")
+
+    with pytest.raises(ArchiveError, match="No .data file"):
+        inspect_jsonl_data_archive(path)
 
 
 def test_detect_archive_type_rejects_unknown_extension(tmp_path: Path) -> None:
