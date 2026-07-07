@@ -61,6 +61,7 @@ def build_download_plan(
     raw_dir = Path(config.get("raw_dir", "data/raw/bybit"))
     processed_dir = Path(config.get("processed_dir", "data/processed/bybit"))
     datasets = [dataset] if dataset else config.get("datasets", ["trades", "orderbook"])
+    filename_templates = config.get("filename_templates", {})
     url_templates = config.get("url_templates", {})
     dates = list(
         iter_dates(
@@ -75,7 +76,15 @@ def build_download_plan(
         template = url_templates.get(dataset, "")
         for current_date in dates:
             date_text = current_date.isoformat()
-            filename = f"{symbol}_{dataset}_{date_text}.csv.gz"
+            filename_template = filename_templates.get(
+                dataset,
+                "{symbol}_{dataset}_{date}.csv.gz",
+            )
+            filename = filename_template.format(
+                symbol=symbol,
+                dataset=dataset,
+                date=date_text,
+            )
             url = (
                 template.format(symbol=symbol, date=date_text, filename=filename)
                 if template

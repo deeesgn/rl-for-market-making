@@ -1,4 +1,4 @@
-.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run bybit-download-dry-run bybit-download-sample inspect-bybit-sample convert-bybit-sample show-splits check-bybit-sample build-bybit-manifest lint
+.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run bybit-download-dry-run bybit-download-sample verify-bybit-archive-dry-run verify-bybit-archive-sample inspect-bybit-sample convert-bybit-sample show-splits check-bybit-sample build-bybit-manifest lint
 
 install:
 	python -m pip install --upgrade pip
@@ -45,6 +45,12 @@ bybit-download-dry-run:
 
 bybit-download-sample:
 	python scripts/download_bybit_data.py --config configs/data_bybit.yaml --dataset trades --symbol BTCUSDT --start-date 2024-01-01 --end-date 2024-01-02 --max-files 1 --execute
+
+verify-bybit-archive-dry-run:
+	python scripts/verify_bybit_archive.py --config configs/data_bybit.yaml --dataset trades --symbol BTCUSDT --date 2024-01-01 --output-dir data/raw/bybit/verify
+
+verify-bybit-archive-sample:
+	python scripts/verify_bybit_archive.py --config configs/data_bybit.yaml --dataset trades --symbol BTCUSDT --date 2024-01-01 --output-dir data/raw/bybit/verify --execute
 
 inspect-bybit-sample:
 	python scripts/inspect_bybit_data.py --path data/sample/bybit_trades_sample.csv --dataset trades

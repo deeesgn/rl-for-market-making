@@ -9,6 +9,11 @@ datasets:
 raw_dir: data/raw/bybit
 processed_dir: data/processed/bybit
 timeout_seconds: 30
+# Archive filename templates are configurable so a dataset can use .csv,
+# .csv.gz, or .zip without changing downloader code.
+filename_templates:
+  trades: "{symbol}_{dataset}_{date}.csv.gz"
+  orderbook: "{symbol}_{dataset}_{date}.csv.gz"
 # URL templates are intentionally configurable because Bybit archive paths can
 # change by market, dataset, and archive format. Supported placeholders:
 # {symbol}, {date}, {filename}

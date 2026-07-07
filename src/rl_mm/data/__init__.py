@@ -1,5 +1,11 @@
 """Data ingestion and validation helpers."""
 
+from rl_mm.data.archive import (
+    ArchiveError,
+    ArchiveInspection,
+    detect_archive_type,
+    inspect_csv_archive,
+)
 from rl_mm.data.bybit_downloader import (
     BybitDownloadError,
     BybitDownloadPlan,
@@ -20,6 +26,8 @@ from rl_mm.data.schema import (
 )
 
 __all__ = [
+    "ArchiveError",
+    "ArchiveInspection",
     "BybitDownloadPlan",
     "BybitDownloadError",
     "BybitDownloadResult",
@@ -30,8 +38,10 @@ __all__ = [
     "build_download_plan",
     "check_processed_data",
     "convert_csv_to_parquet",
+    "detect_archive_type",
     "download_file",
     "download_plan",
+    "inspect_csv_archive",
     "load_bybit_config",
     "normalize_records",
     "validate_records",
