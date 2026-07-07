@@ -1,4 +1,4 @@
-.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run inspect-bybit-sample convert-bybit-sample lint
+.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run inspect-bybit-sample convert-bybit-sample show-splits check-bybit-sample build-bybit-manifest lint
 
 install:
 	python -m pip install --upgrade pip
@@ -45,6 +45,15 @@ inspect-bybit-sample:
 
 convert-bybit-sample:
 	python scripts/convert_bybit_data.py --input data/sample/bybit_trades_sample.csv --dataset trades --output data/processed/bybit/trades/BTCUSDT_sample.parquet
+
+show-splits:
+	python scripts/show_data_splits.py --protocol configs/experiment_protocol.yaml
+
+check-bybit-sample:
+	python scripts/check_processed_data.py --input data/processed/bybit/trades/BTCUSDT_sample.parquet --dataset trades
+
+build-bybit-manifest:
+	python scripts/build_dataset_manifest.py --input-dir data/processed/bybit --output data/processed/bybit/manifest.json
 
 lint:
 	python -m ruff check src tests scripts

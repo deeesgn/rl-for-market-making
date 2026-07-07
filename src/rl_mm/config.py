@@ -25,6 +25,8 @@ class ExperimentProtocol:
     train_split: float
     validation_split: float
     test_split: float
+    split_method: str
+    shuffle: bool
     replay_frequency: str
     book_depth: int
     initial_capital: float
@@ -78,7 +80,6 @@ def load_experiment_protocol(
         "data",
         "trading",
         "evaluation",
-        "required_metrics",
     }
     missing = required_top_level - set(config)
     if missing:
@@ -89,6 +90,21 @@ def load_experiment_protocol(
     data = require_mapping(config, "data")
     trading = require_mapping(config, "trading")
     evaluation = require_mapping(config, "evaluation")
+    require_fields(date_range, "date_range", {"start", "end"})
+    require_fields(split, "split", {"train", "validation", "test", "method", "shuffle"})
+    require_fields(data, "data", {"replay_frequency", "book_depth"})
+    require_fields(
+        trading,
+        "trading",
+        {
+            "initial_capital",
+            "maker_fee",
+            "taker_fee",
+            "latency_ms",
+            "max_inventory_btc",
+        },
+    )
+    require_fields(evaluation, "evaluation", {"seeds", "episodes", "required_metrics"})
 
     protocol = ExperimentProtocol(
         exchange=str(config["exchange"]),
@@ -98,6 +114,8 @@ def load_experiment_protocol(
         train_split=float(split["train"]),
         validation_split=float(split["validation"]),
         test_split=float(split["test"]),
+        split_method=str(split["method"]),
+        shuffle=bool(split["shuffle"]),
         replay_frequency=str(data["replay_frequency"]),
         book_depth=int(data["book_depth"]),
         initial_capital=parse_numeric_field(trading, "initial_capital"),
@@ -107,7 +125,7 @@ def load_experiment_protocol(
         max_inventory_btc=parse_numeric_field(trading, "max_inventory_btc"),
         seeds=tuple(int(seed) for seed in evaluation["seeds"]),
         evaluation_episodes=int(evaluation["episodes"]),
-        required_metrics=tuple(str(metric) for metric in config["required_metrics"]),
+        required_metrics=tuple(str(metric) for metric in evaluation["required_metrics"]),
     )
     validate_experiment_protocol(protocol)
     return protocol
@@ -118,6 +136,10 @@ def validate_experiment_protocol(protocol: ExperimentProtocol) -> None:
 
     if protocol.end_date < protocol.start_date:
         raise ConfigValidationError("Protocol end date must be on or after start date.")
+    if protocol.split_method != "chronological":
+        raise ConfigValidationError("Protocol split method must be chronological.")
+    if protocol.shuffle:
+        raise ConfigValidationError("Protocol split must not shuffle data.")
     if abs(protocol.split_sum - 1.0) > 1e-9:
         raise ConfigValidationError("Train/validation/test split must sum to 1.0.")
     if protocol.book_depth <= 0:
@@ -145,6 +167,12 @@ def require_mapping(config: dict[str, Any], key: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ConfigValidationError(f"Expected '{key}' to be a mapping.")
     return value
+
+
+def require_fields(config: dict[str, Any], name: str, fields: set[str]) -> None:
+    missing = fields - set(config)
+    if missing:
+        raise ConfigValidationError(f"'{name}' missing fields: {sorted(missing)}")
 
 
 def parse_date(value: Any) -> date:

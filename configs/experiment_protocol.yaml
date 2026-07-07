@@ -24,13 +24,13 @@ evaluation:
     - 100
     - 200
   episodes: 20
-required_metrics:
-  - total_pnl
-  - total_reward
-  - sharpe_ratio
-  - maximum_drawdown
-  - max_abs_inventory
-  - mean_abs_inventory
-  - final_inventory
-  - quote_rate
-  - fill_rate
+  required_metrics:
+    - total_pnl
+    - total_reward
+    - sharpe_ratio
+    - maximum_drawdown
+    - max_abs_inventory
+    - mean_abs_inventory
+    - final_inventory
+    - quote_rate
+    - fill_rate

@@ -20,6 +20,8 @@ def test_experiment_protocol_loads_expected_values() -> None:
     assert protocol.train_split == 0.75
     assert protocol.validation_split == 0.10
     assert protocol.test_split == 0.15
+    assert protocol.split_method == "chronological"
+    assert protocol.shuffle is False
     assert protocol.replay_frequency == "1s"
     assert protocol.book_depth == 10
     assert protocol.initial_capital == 10000
@@ -44,7 +46,13 @@ def test_experiment_protocol_rejects_invalid_split(tmp_path: Path) -> None:
         "exchange": "Bybit",
         "instrument": "BTCUSDT Perpetual",
         "date_range": {"start": "2024-01-01", "end": "2025-12-31"},
-        "split": {"train": 0.7, "validation": 0.1, "test": 0.1},
+        "split": {
+            "train": 0.7,
+            "validation": 0.1,
+            "test": 0.1,
+            "method": "chronological",
+            "shuffle": False,
+        },
         "data": {"replay_frequency": "1s", "book_depth": 10},
         "trading": {
             "initial_capital": 10000,
@@ -53,8 +61,11 @@ def test_experiment_protocol_rejects_invalid_split(tmp_path: Path) -> None:
             "latency_ms": 0,
             "max_inventory_btc": 0.02,
         },
-        "evaluation": {"seeds": [42, 100, 200], "episodes": 20},
-        "required_metrics": list(REQUIRED_PROTOCOL_METRICS),
+        "evaluation": {
+            "seeds": [42, 100, 200],
+            "episodes": 20,
+            "required_metrics": list(REQUIRED_PROTOCOL_METRICS),
+        },
     }
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
@@ -68,7 +79,13 @@ def test_experiment_protocol_requires_numeric_trading_fields(tmp_path: Path) -> 
         "exchange": "Bybit",
         "instrument": "BTCUSDT Perpetual",
         "date_range": {"start": "2024-01-01", "end": "2025-12-31"},
-        "split": {"train": 0.75, "validation": 0.1, "test": 0.15},
+        "split": {
+            "train": 0.75,
+            "validation": 0.1,
+            "test": 0.15,
+            "method": "chronological",
+            "shuffle": False,
+        },
         "data": {"replay_frequency": "1s", "book_depth": 10},
         "trading": {
             "initial_capital": 10000,
@@ -77,10 +94,42 @@ def test_experiment_protocol_requires_numeric_trading_fields(tmp_path: Path) -> 
             "latency_ms": 0,
             "max_inventory_btc": 0.02,
         },
-        "evaluation": {"seeds": [42, 100, 200], "episodes": 20},
-        "required_metrics": list(REQUIRED_PROTOCOL_METRICS),
+        "evaluation": {
+            "seeds": [42, 100, 200],
+            "episodes": 20,
+            "required_metrics": list(REQUIRED_PROTOCOL_METRICS),
+        },
     }
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
     with pytest.raises(ConfigValidationError, match="maker_fee"):
+        load_experiment_protocol(config_path)
+
+
+def test_experiment_protocol_requires_evaluation_metrics(tmp_path: Path) -> None:
+    config_path = tmp_path / "protocol.yaml"
+    config = {
+        "exchange": "Bybit",
+        "instrument": "BTCUSDT Perpetual",
+        "date_range": {"start": "2024-01-01", "end": "2025-12-31"},
+        "split": {
+            "train": 0.75,
+            "validation": 0.1,
+            "test": 0.15,
+            "method": "chronological",
+            "shuffle": False,
+        },
+        "data": {"replay_frequency": "1s", "book_depth": 10},
+        "trading": {
+            "initial_capital": 10000,
+            "maker_fee": 0.0002,
+            "taker_fee": 0.00055,
+            "latency_ms": 0,
+            "max_inventory_btc": 0.02,
+        },
+        "evaluation": {"seeds": [42, 100, 200], "episodes": 20},
+    }
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    with pytest.raises(ConfigValidationError, match="required_metrics"):
         load_experiment_protocol(config_path)
