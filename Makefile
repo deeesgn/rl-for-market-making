@@ -32,7 +32,7 @@ train-mock-randomized:
 	python scripts/train_mock_ppo_randomized.py --timesteps 5000 --seed 42 --config configs/env_mock.yaml --model-path models/mock_ppo_randomized.zip
 
 eval-mock-randomized:
-	python scripts/evaluate_randomized_ppo.py --episodes 20 --seed 300 --base-config configs/env_mock.yaml --model-path models/mock_ppo_randomized.zip
+	python scripts/evaluate_randomized_ppo.py --episodes 20 --seed 200 --base-config configs/env_mock.yaml --model-path models/mock_ppo_randomized.zip
 
 compare-mock-regimes:
 	python scripts/compare_mock_regime_models.py --episodes 20 --seed 300 --base-config configs/env_mock.yaml --static-model-path models/mock_ppo.zip --randomized-model-path models/mock_ppo_randomized.zip
