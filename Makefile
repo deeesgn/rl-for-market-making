@@ -1,4 +1,4 @@
-.PHONY: install test smoke lint
+.PHONY: install test smoke run-mock lint
 
 install:
 	python -m pip install --upgrade pip
@@ -9,6 +9,9 @@ test:
 
 smoke:
 	python scripts/smoke_test.py
+
+run-mock:
+	python scripts/run_mock_env.py --config configs/env_mock.yaml
 
 lint:
 	python -m ruff check src tests scripts

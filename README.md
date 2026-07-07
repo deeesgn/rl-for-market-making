@@ -53,6 +53,16 @@ Run the test suite in the image:
 docker run --rm rl-mm python -m pytest
 ```
 
+## Mock Market Environment
+
+The first runnable market-making component is a tiny Gymnasium environment that simulates a random-walk mid price, probabilistic bid/ask fills, inventory, cash, PnL, and an inventory-aware reward.
+
+```bash
+make run-mock
+```
+
+The mock config lives at `configs/env_mock.yaml`. It is only for testing mechanics before adding Bybit data, `hftbacktest`, baselines, or RL training.
+
 ## Notes
 
 - `src/rl_mm/` is the importable Python package.
