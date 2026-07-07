@@ -5,8 +5,10 @@ from rl_mm.training.ppo_trainer import (
     evaluate_ppo,
     load_env_config,
     make_mock_env,
+    make_randomized_mock_env,
     policy_for_env,
     train_ppo,
+    train_randomized_ppo,
 )
 
 __all__ = [
@@ -14,6 +16,8 @@ __all__ = [
     "evaluate_ppo",
     "load_env_config",
     "make_mock_env",
+    "make_randomized_mock_env",
     "policy_for_env",
     "train_ppo",
+    "train_randomized_ppo",
 ]

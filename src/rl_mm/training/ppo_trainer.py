@@ -17,7 +17,7 @@ from rl_mm.backtest.metrics import (
     aggregate_episode_metrics,
     compute_episode_metrics,
 )
-from rl_mm.env import MockMarketMakingEnv
+from rl_mm.env import MockMarketMakingEnv, RandomizedMockEnv
 
 
 class ScalarDictObservationWrapper(gym.ObservationWrapper):
@@ -65,6 +65,22 @@ def make_mock_env(env_config: dict[str, Any], *, seed: int) -> gym.Env:
     return ScalarDictObservationWrapper(env)
 
 
+def make_randomized_mock_env(
+    *,
+    base_config_path: Path,
+    regime_config_paths: list[Path] | None,
+    seed: int,
+) -> gym.Env:
+    """Create a randomized-regime mock env for PPO training."""
+
+    env = RandomizedMockEnv(
+        base_config_path=base_config_path,
+        regime_config_paths=regime_config_paths,
+        seed=seed,
+    )
+    return ScalarDictObservationWrapper(env)
+
+
 def policy_for_env(env: gym.Env) -> str:
     """Pick the SB3 policy class name from the environment observation space."""
 
@@ -84,6 +100,38 @@ def train_ppo(
 
     env_config = load_env_config(config_path)
     env = make_mock_env(env_config, seed=seed)
+    model = PPO(
+        policy_for_env(env),
+        env,
+        seed=seed,
+        verbose=0,
+        n_steps=64,
+        batch_size=64,
+        n_epochs=2,
+    )
+    model.learn(total_timesteps=timesteps)
+
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model.save(model_path)
+    env.close()
+    return model_path
+
+
+def train_randomized_ppo(
+    *,
+    base_config_path: Path,
+    regime_config_paths: list[Path] | None,
+    timesteps: int,
+    seed: int,
+    model_path: Path,
+) -> Path:
+    """Train a small PPO model on randomized mock market regimes."""
+
+    env = make_randomized_mock_env(
+        base_config_path=base_config_path,
+        regime_config_paths=regime_config_paths,
+        seed=seed,
+    )
     model = PPO(
         policy_for_env(env),
         env,

@@ -1,4 +1,4 @@
-.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock lint
+.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized lint
 
 install:
 	python -m pip install --upgrade pip
@@ -27,6 +27,12 @@ compare-mock:
 
 stress-mock:
 	python scripts/run_mock_regime_stress.py --episodes 20 --seed 200 --base-config configs/env_mock.yaml --model-path models/mock_ppo.zip
+
+train-mock-randomized:
+	python scripts/train_mock_ppo_randomized.py --timesteps 5000 --seed 42 --config configs/env_mock.yaml --model-path models/mock_ppo_randomized.zip
+
+eval-mock-randomized:
+	python scripts/evaluate_randomized_ppo.py --episodes 20 --seed 300 --base-config configs/env_mock.yaml --model-path models/mock_ppo_randomized.zip
 
 lint:
 	python -m ruff check src tests scripts
