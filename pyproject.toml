@@ -12,6 +12,7 @@ dependencies = [
   "gymnasium>=0.29",
   "numpy>=1.26",
   "PyYAML>=6.0",
+  "requests>=2.31",
   "stable-baselines3>=2.3",
 ]
 

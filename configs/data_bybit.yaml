@@ -8,6 +8,10 @@ datasets:
   - orderbook
 raw_dir: data/raw/bybit
 processed_dir: data/processed/bybit
+timeout_seconds: 30
+# URL templates are intentionally configurable because Bybit archive paths can
+# change by market, dataset, and archive format. Supported placeholders:
+# {symbol}, {date}, {filename}
 url_templates:
   trades: "https://public.bybit.com/trading/{symbol}/{filename}"
   orderbook: "https://public.bybit.com/orderbook/{symbol}/{filename}"

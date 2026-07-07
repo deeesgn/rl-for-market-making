@@ -57,8 +57,12 @@ def test_build_download_plan_uses_storage_layout() -> None:
     )
 
     assert len(plan) == 2
-    assert plan[0].raw_path == Path("data/raw/bybit/trades/BTCUSDT_trades_2024-01-01.csv.gz")
-    assert plan[0].processed_path == Path("data/processed/bybit/trades/BTCUSDT_2024-01-01.parquet")
+    assert plan[0].raw_path == Path(
+        "data/raw/bybit/trades/BTCUSDT/BTCUSDT_trades_2024-01-01.csv.gz"
+    )
+    assert plan[0].processed_path == Path(
+        "data/processed/bybit/trades/BTCUSDT/BTCUSDT_2024-01-01.parquet"
+    )
     assert plan[0].url == "https://example.test/BTCUSDT/BTCUSDT_trades_2024-01-01.csv.gz"
 
 
