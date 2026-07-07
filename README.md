@@ -65,7 +65,7 @@ The first runnable market-making component is a tiny Gymnasium environment that 
 make run-mock
 ```
 
-The mock config lives at `configs/env_mock.yaml`. It is only for testing mechanics before adding Bybit data, `hftbacktest`, baselines, or RL training.
+The mock config lives at `configs/env_mock.yaml`. It is only for testing mechanics with the mock environment and simple rule-based baselines before adding RL training, Bybit data, `hftbacktest`, real order book data, or production trading logic.
 
 ## Mock Baselines
 
