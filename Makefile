@@ -1,4 +1,4 @@
-.PHONY: install test smoke run-mock baselines train-mock eval-mock lint
+.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock lint
 
 install:
 	python -m pip install --upgrade pip
@@ -21,6 +21,9 @@ train-mock:
 
 eval-mock:
 	python scripts/evaluate_mock_ppo.py --episodes 20 --seed 100 --config configs/env_mock.yaml --model-path models/mock_ppo.zip
+
+compare-mock:
+	python scripts/compare_mock_strategies.py --episodes 20 --seed 100 --config configs/env_mock.yaml --model-path models/mock_ppo.zip
 
 lint:
 	python -m ruff check src tests scripts
