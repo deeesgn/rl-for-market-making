@@ -24,6 +24,12 @@ from rl_mm.data.bybit_downloader import (
 )
 from rl_mm.data.converter import convert_csv_to_parquet, normalize_records
 from rl_mm.data.manifest import build_dataset_manifest, write_dataset_manifest
+from rl_mm.data.orderbook_parser import (
+    OrderBookConversionResult,
+    convert_orderbook_zip_to_parquet,
+    iter_orderbook_messages_from_zip,
+    iter_sampled_orderbook_rows,
+)
 from rl_mm.data.quality import check_processed_data
 from rl_mm.data.schema import (
     ORDERBOOK_SCHEMA,
@@ -36,6 +42,7 @@ __all__ = [
     "ArchiveError",
     "ArchiveInspection",
     "JsonLinesArchiveInspection",
+    "OrderBookConversionResult",
     "BybitDownloadPlan",
     "BybitDownloadError",
     "BybitDownloadResult",
@@ -50,11 +57,14 @@ __all__ = [
     "build_url_candidates",
     "check_processed_data",
     "convert_csv_to_parquet",
+    "convert_orderbook_zip_to_parquet",
     "detect_archive_type",
     "download_file",
     "download_plan",
     "inspect_csv_archive",
     "inspect_jsonl_data_archive",
+    "iter_orderbook_messages_from_zip",
+    "iter_sampled_orderbook_rows",
     "load_bybit_config",
     "normalize_records",
     "probe_url_candidate",
