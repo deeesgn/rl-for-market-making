@@ -63,6 +63,17 @@ make run-mock
 
 The mock config lives at `configs/env_mock.yaml`. It is only for testing mechanics before adding Bybit data, `hftbacktest`, baselines, or RL training.
 
+## Mock Baselines
+
+Two simple rule-based strategies can be compared on the mock environment:
+
+- `FixedSpreadStrategy`: always sends action `2`, the medium symmetric quote.
+- `InventorySkewStrategy`: sends action `4` to reduce long inventory, action `5` to reduce short inventory, and action `2` otherwise.
+
+```bash
+make baselines
+```
+
 ## Notes
 
 - `src/rl_mm/` is the importable Python package.
