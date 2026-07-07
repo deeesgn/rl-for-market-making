@@ -2,7 +2,7 @@ import numpy as np
 
 from rl_mm.backtest.metrics import aggregate_episode_metrics, compute_episode_metrics
 from rl_mm.strategies import FixedSpreadStrategy, InventorySkewStrategy
-from scripts.run_baselines import run_strategy
+from scripts.run_baselines import print_comparison, run_strategy
 
 
 def observation(inventory: float) -> dict[str, np.ndarray]:
@@ -87,3 +87,24 @@ def test_run_strategy_is_deterministic_for_same_seed() -> None:
     second = run_strategy(InventorySkewStrategy(), env_config, episodes=4, seed=10)
 
     assert first.as_dict() == second.as_dict()
+
+
+def test_print_comparison_reports_mean_plus_std(capsys) -> None:
+    aggregate = run_strategy(
+        FixedSpreadStrategy(),
+        {"max_steps": 2, "initial_mid_price": 100.0},
+        episodes=2,
+        seed=20,
+    )
+
+    print_comparison({"fixed_spread": aggregate})
+
+    output = capsys.readouterr().out
+    assert "strategy" in output
+    assert "total_pnl" in output
+    assert "total_reward" in output
+    assert "max_abs_inventory" in output
+    assert "final_inventory" in output
+    assert "number_of_steps" in output
+    assert "fixed_spread" in output
+    assert "+/-" in output

@@ -78,7 +78,7 @@ Two simple rule-based strategies can be compared over multiple seeded mock episo
 make baselines
 ```
 
-This runs `scripts/run_baselines.py` with 20 episodes and seed 42, then prints mean and standard deviation for total PnL, total reward, max absolute inventory, final inventory, and number of steps. You can also run it directly:
+This runs `scripts/run_baselines.py` with 20 episodes and seed 42, then prints `mean +/- std` for total PnL, total reward, max absolute inventory, final inventory, and number of steps. You can also run it directly:
 
 ```bash
 python scripts/run_baselines.py --episodes 20 --seed 42 --config configs/env_mock.yaml
