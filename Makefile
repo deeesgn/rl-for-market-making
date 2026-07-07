@@ -1,4 +1,4 @@
-.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes lint
+.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run inspect-bybit-sample lint
 
 install:
 	python -m pip install --upgrade pip
@@ -36,6 +36,12 @@ eval-mock-randomized:
 
 compare-mock-regimes:
 	python scripts/compare_mock_regime_models.py --episodes 20 --seed 300 --base-config configs/env_mock.yaml --static-model-path models/mock_ppo.zip --randomized-model-path models/mock_ppo_randomized.zip
+
+bybit-dry-run:
+	python scripts/download_bybit_data.py --config configs/data_bybit.yaml --dry-run
+
+inspect-bybit-sample:
+	python scripts/inspect_bybit_data.py --path data/sample/bybit_trades_sample.csv --dataset trades
 
 lint:
 	python -m ruff check src tests scripts
