@@ -2,6 +2,7 @@ import numpy as np
 
 from rl_mm.backtest.metrics import aggregate_episode_metrics, compute_episode_metrics
 from rl_mm.strategies import FixedSpreadStrategy, InventorySkewStrategy
+from scripts.run_baselines import run_strategy
 
 
 def observation(inventory: float) -> dict[str, np.ndarray]:
@@ -64,3 +65,25 @@ def test_aggregate_episode_metrics() -> None:
     assert aggregate.final_inventory.std == 2.0
     assert aggregate.number_of_steps.mean == 2.0
     assert aggregate.number_of_steps.std == 0.0
+
+
+def test_run_strategy_aggregates_multiple_seeded_episodes() -> None:
+    aggregate = run_strategy(
+        FixedSpreadStrategy(),
+        {"max_steps": 3, "initial_mid_price": 100.0},
+        episodes=4,
+        seed=10,
+    )
+
+    assert aggregate.number_of_steps.mean == 3.0
+    assert aggregate.number_of_steps.std == 0.0
+    assert aggregate.max_abs_inventory.mean >= 0.0
+
+
+def test_run_strategy_is_deterministic_for_same_seed() -> None:
+    env_config = {"max_steps": 3, "initial_mid_price": 100.0}
+
+    first = run_strategy(InventorySkewStrategy(), env_config, episodes=4, seed=10)
+    second = run_strategy(InventorySkewStrategy(), env_config, episodes=4, seed=10)
+
+    assert first.as_dict() == second.as_dict()

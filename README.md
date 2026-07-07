@@ -4,7 +4,7 @@ Docker-ready skeleton for a quant research project on RL market making with inve
 
 The eventual goal is to train an RL agent that places bid and ask quotes on historical Bybit order book data with `hftbacktest`, compare it with fixed-spread and Avellaneda-Stoikov baselines, and report PnL/risk metrics.
 
-This initial version intentionally contains no RL, Bybit, `hftbacktest`, baseline, backtest, or trading logic.
+This version intentionally contains no RL training, Bybit ingestion, `hftbacktest` integration, real order book data, or production trading logic. It does include a mock Gymnasium environment and two simple rule-based baselines for early mechanics checks.
 
 ## Project Layout
 
@@ -17,11 +17,15 @@ This initial version intentionally contains no RL, Bybit, `hftbacktest`, baselin
 ├── reports/
 │   └── figures/
 ├── scripts/
+│   ├── run_baselines.py
+│   ├── run_mock_env.py
 │   └── smoke_test.py
 ├── src/
 │   └── rl_mm/
 ├── tests/
-│   └── test_import.py
+│   ├── test_baselines.py
+│   ├── test_import.py
+│   └── test_mock_env.py
 ├── Dockerfile
 ├── Makefile
 ├── README.md
