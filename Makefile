@@ -1,4 +1,4 @@
-.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run bybit-download-dry-run bybit-download-sample discover-bybit-urls verify-bybit-archive-dry-run verify-bybit-archive-sample inspect-bybit-sample convert-bybit-sample show-splits check-bybit-sample build-bybit-manifest lint
+.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run bybit-download-dry-run bybit-download-sample discover-bybit-urls verify-bybit-archive-dry-run verify-bybit-archive-sample inspect-bybit-sample convert-bybit-sample convert-bybit-verified show-splits check-bybit-sample build-bybit-manifest lint
 
 install:
 	python -m pip install --upgrade pip
@@ -60,6 +60,9 @@ inspect-bybit-sample:
 
 convert-bybit-sample:
 	python scripts/convert_bybit_data.py --input data/sample/bybit_trades_sample.csv --dataset trades --output data/processed/bybit/trades/BTCUSDT_sample.parquet
+
+convert-bybit-verified:
+	python scripts/convert_bybit_data.py --input data/raw/bybit/verify/trades/BTCUSDT/BTCUSDT2024-01-01.csv.gz --dataset trades --output data/processed/bybit/trades/BTCUSDT_2024-01-01.parquet
 
 show-splits:
 	python scripts/show_data_splits.py --protocol configs/experiment_protocol.yaml

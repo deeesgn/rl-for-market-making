@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 from pathlib import Path
 from typing import Any
 
@@ -16,19 +17,34 @@ from rl_mm.data.schema import (
     validate_records,
 )
 
+TRADE_EXTRA_COLUMNS = (
+    "tickDirection",
+    "trdMatchID",
+    "grossValue",
+    "homeNotional",
+    "foreignNotional",
+)
+TRADE_EXTRA_NUMERIC_COLUMNS = {"grossValue", "homeNotional", "foreignNotional"}
+
 
 def load_csv_records(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         raise FileNotFoundError(f"Input file not found: {path}")
-    with path.open("r", encoding="utf-8", newline="") as file:
+    with open_csv_text(path) as file:
         return list(csv.DictReader(file))
+
+
+def open_csv_text(path: Path):
+    if path.name.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8", newline="")
+    return path.open("r", encoding="utf-8", newline="")
 
 
 def normalize_records(records: list[dict[str, Any]], *, dataset: str) -> pd.DataFrame:
     schema = get_schema(dataset)
     validate_records(records, schema)
     normalized = [normalize_record(record, schema=schema) for record in records]
-    return pd.DataFrame(normalized, columns=schema.required_columns)
+    return pd.DataFrame(normalized, columns=normalized_columns(schema, normalized))
 
 
 def normalize_record(record: dict[str, Any], *, schema: DatasetSchema) -> dict[str, Any]:
@@ -39,6 +55,19 @@ def normalize_record(record: dict[str, Any], *, schema: DatasetSchema) -> dict[s
 
     if schema.name == "trades":
         normalized["side"] = str(normalized["side"]).lower()
+        for column in TRADE_EXTRA_COLUMNS:
+            value = record.get(column)
+            if value is None or value == "":
+                continue
+            if column in TRADE_EXTRA_NUMERIC_COLUMNS:
+                normalized[column] = parse_float(
+                    value,
+                    schema=schema.name,
+                    row_index=1,
+                    column=column,
+                )
+            else:
+                normalized[column] = value
 
     for column in schema.numeric_columns:
         normalized[column] = parse_float(
@@ -49,6 +78,18 @@ def normalize_record(record: dict[str, Any], *, schema: DatasetSchema) -> dict[s
         )
 
     return normalized
+
+
+def normalized_columns(
+    schema: DatasetSchema,
+    records: list[dict[str, Any]],
+) -> list[str]:
+    columns = list(schema.required_columns)
+    if schema.name == "trades":
+        for column in TRADE_EXTRA_COLUMNS:
+            if any(column in record for record in records):
+                columns.append(column)
+    return columns
 
 
 def convert_csv_to_parquet(input_path: Path, *, dataset: str, output_path: Path) -> Path:

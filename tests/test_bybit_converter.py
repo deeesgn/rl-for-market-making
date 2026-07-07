@@ -1,3 +1,4 @@
+import gzip
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +28,37 @@ def test_normalize_trade_records() -> None:
     assert dataframe.loc[0, "size"] == 0.10
 
 
+def test_normalize_real_bybit_trade_records_preserves_useful_extras() -> None:
+    dataframe = normalize_records(
+        [
+            {
+                "timestamp": "1704067200.2353",
+                "symbol": "btcusdt",
+                "side": "Buy",
+                "size": "0.010",
+                "price": "42314.5",
+                "tickDirection": "PlusTick",
+                "trdMatchID": "abc-123",
+                "grossValue": "423.145",
+                "homeNotional": "0.010",
+                "foreignNotional": "423.145",
+            }
+        ],
+        dataset="trades",
+    )
+
+    assert dataframe.loc[0, "timestamp"] == "2024-01-01T00:00:00.235300+00:00"
+    assert dataframe.loc[0, "symbol"] == "BTCUSDT"
+    assert dataframe.loc[0, "side"] == "buy"
+    assert dataframe.loc[0, "price"] == 42314.5
+    assert dataframe.loc[0, "size"] == 0.010
+    assert dataframe.loc[0, "tickDirection"] == "PlusTick"
+    assert dataframe.loc[0, "trdMatchID"] == "abc-123"
+    assert dataframe.loc[0, "grossValue"] == 423.145
+    assert dataframe.loc[0, "homeNotional"] == 0.010
+    assert dataframe.loc[0, "foreignNotional"] == 423.145
+
+
 def test_convert_csv_to_parquet(tmp_path: Path) -> None:
     input_path = tmp_path / "trades.csv"
     output_path = tmp_path / "processed" / "trades.parquet"
@@ -50,6 +82,53 @@ def test_convert_csv_to_parquet(tmp_path: Path) -> None:
     assert dataframe["symbol"].tolist() == ["BTCUSDT", "BTCUSDT"]
     assert dataframe["side"].tolist() == ["buy", "sell"]
     assert dataframe["price"].tolist() == [42000.5, 42001.0]
+
+
+def test_convert_real_bybit_gzip_trades_to_parquet(tmp_path: Path) -> None:
+    input_path = tmp_path / "BTCUSDT2024-01-01.csv.gz"
+    output_path = tmp_path / "processed" / "trades.parquet"
+    with gzip.open(input_path, "wt", encoding="utf-8", newline="") as file:
+        file.write(
+            "\n".join(
+                [
+                    (
+                        "timestamp,symbol,side,size,price,tickDirection,trdMatchID,"
+                        "grossValue,homeNotional,foreignNotional"
+                    ),
+                    (
+                        "1704067200.2353,BTCUSDT,Buy,0.010,42314.5,PlusTick,"
+                        "abc-123,423.145,0.010,423.145"
+                    ),
+                    (
+                        "1704067201.0000,BTCUSDT,Sell,0.020,42310.0,MinusTick,"
+                        "def-456,846.2,0.020,846.2"
+                    ),
+                ]
+            )
+        )
+
+    convert_csv_to_parquet(input_path, dataset="trades", output_path=output_path)
+
+    dataframe = pd.read_parquet(output_path)
+    assert list(dataframe.columns) == [
+        "timestamp",
+        "symbol",
+        "side",
+        "price",
+        "size",
+        "tickDirection",
+        "trdMatchID",
+        "grossValue",
+        "homeNotional",
+        "foreignNotional",
+    ]
+    assert dataframe["timestamp"].tolist() == [
+        "2024-01-01T00:00:00.235300+00:00",
+        "2024-01-01T00:00:01+00:00",
+    ]
+    assert dataframe["side"].tolist() == ["buy", "sell"]
+    assert dataframe["price"].tolist() == [42314.5, 42310.0]
+    assert dataframe["homeNotional"].tolist() == [0.010, 0.020]
 
 
 def test_convert_orderbook_csv_to_parquet(tmp_path: Path) -> None:

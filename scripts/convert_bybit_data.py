@@ -22,7 +22,10 @@ def main() -> None:
             output_path=args.output,
         )
     except FileNotFoundError as error:
-        parser.exit(status=1, message=f"{error}\n")
+        message = f"{error}\n"
+        if "data/raw/bybit/verify" in args.input.as_posix():
+            message += "Run `make verify-bybit-archive-sample` first.\n"
+        parser.exit(status=1, message=message)
 
     print(f"converted {args.dataset} CSV to parquet: {output_path}")
 

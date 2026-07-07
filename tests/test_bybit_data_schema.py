@@ -27,6 +27,26 @@ def test_trade_schema_accepts_expected_columns() -> None:
     )
 
 
+def test_trade_schema_accepts_real_bybit_columns_with_decimal_unix_timestamp() -> None:
+    validate_records(
+        [
+            {
+                "timestamp": "1704067200.2353",
+                "symbol": "BTCUSDT",
+                "side": "Buy",
+                "size": "0.010",
+                "price": "42314.5",
+                "tickDirection": "PlusTick",
+                "trdMatchID": "abc-123",
+                "grossValue": "423.145",
+                "homeNotional": "0.010",
+                "foreignNotional": "423.145",
+            }
+        ],
+        TRADES_SCHEMA,
+    )
+
+
 def test_orderbook_schema_rejects_missing_required_column() -> None:
     with pytest.raises(SchemaValidationError, match="missing columns"):
         validate_records(

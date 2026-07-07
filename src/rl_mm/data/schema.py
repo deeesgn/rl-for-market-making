@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 
@@ -93,25 +93,36 @@ def parse_timestamp(value: Any) -> datetime:
     """Parse ISO timestamps or millisecond/microsecond/nanosecond epoch values."""
 
     if isinstance(value, datetime):
-        return value
+        return ensure_utc(value)
     text = str(value).strip()
     if not text:
         raise SchemaValidationError("Timestamp value is empty.")
-    if text.isdigit():
-        integer_value = int(text)
-        if integer_value > 10**17:
-            seconds = integer_value / 1_000_000_000
-        elif integer_value > 10**14:
-            seconds = integer_value / 1_000_000
-        elif integer_value > 10**11:
-            seconds = integer_value / 1_000
+    if is_numeric_timestamp(text):
+        numeric_value = float(text)
+        absolute_value = abs(numeric_value)
+        if absolute_value > 10**17:
+            seconds = numeric_value / 1_000_000_000
+        elif absolute_value > 10**14:
+            seconds = numeric_value / 1_000_000
+        elif absolute_value > 10**11:
+            seconds = numeric_value / 1_000
         else:
-            seconds = integer_value
-        return datetime.fromtimestamp(seconds)
+            seconds = numeric_value
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return ensure_utc(datetime.fromisoformat(text.replace("Z", "+00:00")))
     except ValueError as error:
         raise SchemaValidationError(f"Could not parse timestamp '{value}'.") from error
+
+
+def is_numeric_timestamp(text: str) -> bool:
+    return text.replace(".", "", 1).isdigit()
+
+
+def ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def parse_float(value: Any, *, schema: str, row_index: int, column: str) -> float:
