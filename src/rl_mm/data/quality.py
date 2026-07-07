@@ -12,12 +12,16 @@ from rl_mm.data.schema import get_schema, parse_float, parse_timestamp, validate
 
 @dataclass(frozen=True)
 class ProcessedDataQualityReport:
+    dataset: str
     row_count: int
     columns: tuple[str, ...]
     timestamp_min: str
     timestamp_max: str
     missing_values: dict[str, int]
     duplicate_timestamp_count: int
+    duplicate_timestamp_note: str
+    duplicate_trdMatchID_count: int | None
+    duplicate_full_row_count: int
     numeric_summary: dict[str, dict[str, float]]
 
 
@@ -45,6 +49,10 @@ def summarize_processed_dataframe(
 
     timestamps = [parse_timestamp(row[schema.timestamp_column]) for row in records]
     duplicate_timestamp_count = int(dataframe.duplicated(subset=[schema.timestamp_column]).sum())
+    duplicate_trd_match_id_count = None
+    if dataset == "trades" and "trdMatchID" in dataframe.columns:
+        duplicate_trd_match_id_count = int(dataframe.duplicated(subset=["trdMatchID"]).sum())
+    duplicate_full_row_count = int(dataframe.duplicated().sum())
     numeric_summary = {}
     for column in (*schema.price_columns, *schema.size_columns):
         values = [
@@ -58,6 +66,7 @@ def summarize_processed_dataframe(
         }
 
     return ProcessedDataQualityReport(
+        dataset=dataset,
         row_count=len(records),
         columns=tuple(str(column) for column in dataframe.columns),
         timestamp_min=min(timestamps).isoformat(),
@@ -66,8 +75,17 @@ def summarize_processed_dataframe(
             str(column): int(count) for column, count in dataframe.isna().sum().items()
         },
         duplicate_timestamp_count=duplicate_timestamp_count,
+        duplicate_timestamp_note=duplicate_timestamp_note(dataset),
+        duplicate_trdMatchID_count=duplicate_trd_match_id_count,
+        duplicate_full_row_count=duplicate_full_row_count,
         numeric_summary=numeric_summary,
     )
+
+
+def duplicate_timestamp_note(dataset: str) -> str:
+    if dataset == "trades":
+        return "informational: multiple trades can share the same timestamp"
+    return "warning: duplicate timestamps are more important for orderbook data"
 
 
 def print_quality_report(report: ProcessedDataQualityReport) -> None:
@@ -77,7 +95,13 @@ def print_quality_report(report: ProcessedDataQualityReport) -> None:
     print("missing_values:")
     for column, count in report.missing_values.items():
         print(f"  {column}: {count}")
-    print(f"duplicate_timestamp_count: {report.duplicate_timestamp_count}")
+    print(
+        f"duplicate_timestamp_count: {report.duplicate_timestamp_count} "
+        f"({report.duplicate_timestamp_note})"
+    )
+    if report.duplicate_trdMatchID_count is not None:
+        print(f"duplicate_trdMatchID_count: {report.duplicate_trdMatchID_count}")
+    print(f"duplicate_full_row_count: {report.duplicate_full_row_count}")
     print("price_size_summary:")
     for column, values in report.numeric_summary.items():
         print(
