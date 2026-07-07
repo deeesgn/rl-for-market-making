@@ -57,6 +57,23 @@ def test_no_quote_action_receives_penalty() -> None:
     assert info["no_quote_penalty"] == 0.25
 
 
+def test_fill_multipliers_can_disable_fills() -> None:
+    env = MockMarketMakingEnv(
+        seed=123,
+        max_steps=1,
+        fill_probability=1.0,
+        bid_fill_multiplier=0.0,
+        ask_fill_multiplier=0.0,
+    )
+    env.reset()
+
+    _, _, _, _, info = env.step(1)
+
+    assert info["quoted"] is True
+    assert info["bid_filled"] is False
+    assert info["ask_filled"] is False
+
+
 def test_same_seed_and_actions_are_deterministic() -> None:
     actions = [1, 2, 4, 5, 3, 0]
     first = run_episode(actions)

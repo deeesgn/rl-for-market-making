@@ -1,0 +1,6 @@
+name: high_volatility
+overrides:
+  price_volatility: 0.004
+  drift: 0.0
+  bid_fill_multiplier: 1.0
+  ask_fill_multiplier: 1.0

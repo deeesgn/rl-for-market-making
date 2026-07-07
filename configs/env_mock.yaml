@@ -9,6 +9,8 @@ drift: 0.0
 inventory_penalty: 0.01
 no_quote_penalty: 0.001
 fill_probability: 0.45
+bid_fill_multiplier: 1.0
+ask_fill_multiplier: 1.0
 fill_decay: 0.03
 return_window: 20
 actions:

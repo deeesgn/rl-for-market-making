@@ -52,6 +52,8 @@ class MockMarketMakingEnv(gym.Env):
         inventory_penalty: float = 0.01,
         no_quote_penalty: float = 0.001,
         fill_probability: float = 0.45,
+        bid_fill_multiplier: float = 1.0,
+        ask_fill_multiplier: float = 1.0,
         fill_decay: float = 0.03,
         return_window: int = 20,
     ) -> None:
@@ -67,6 +69,8 @@ class MockMarketMakingEnv(gym.Env):
         self.inventory_penalty = inventory_penalty
         self.no_quote_penalty = no_quote_penalty
         self.fill_probability = fill_probability
+        self.bid_fill_multiplier = bid_fill_multiplier
+        self.ask_fill_multiplier = ask_fill_multiplier
         self.fill_decay = fill_decay
         self.return_window = return_window
 
@@ -136,8 +140,8 @@ class MockMarketMakingEnv(gym.Env):
             ask_price = self.mid_price + quote.ask_distance
             self.spread = quote.bid_distance + quote.ask_distance
 
-            bid_filled = self._is_filled(quote.bid_distance)
-            ask_filled = self._is_filled(quote.ask_distance)
+            bid_filled = self._is_filled(quote.bid_distance, self.bid_fill_multiplier)
+            ask_filled = self._is_filled(quote.ask_distance, self.ask_fill_multiplier)
 
             if bid_filled:
                 self.inventory += self.order_size
@@ -179,8 +183,8 @@ class MockMarketMakingEnv(gym.Env):
             f"portfolio={self.portfolio_value:.4f} pnl={self.pnl:.4f}"
         )
 
-    def _is_filled(self, distance: float) -> bool:
-        probability = self.fill_probability * np.exp(-distance / self.fill_decay)
+    def _is_filled(self, distance: float, multiplier: float) -> bool:
+        probability = self.fill_probability * multiplier * np.exp(-distance / self.fill_decay)
         probability = float(np.clip(probability, 0.0, 1.0))
         return bool(self.np_random.random() < probability)
 
