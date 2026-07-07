@@ -36,6 +36,7 @@ def main() -> None:
         "max_abs_inventory",
         "final_inventory",
         "number_of_steps",
+        "quote_rate",
     ]:
         print(f"{name.ljust(17)}  {format_summary(**row[name])}")
 

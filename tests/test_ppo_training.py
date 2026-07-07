@@ -9,7 +9,8 @@ def test_load_env_config_removes_scripted_actions() -> None:
     config = load_env_config(Path("configs/env_mock.yaml"))
 
     assert "actions" not in config
-    assert config["max_steps"] == 10
+    assert config["max_steps"] == 100
+    assert config["no_quote_penalty"] == 0.001
 
 
 def test_policy_for_mock_env_uses_multi_input_policy() -> None:

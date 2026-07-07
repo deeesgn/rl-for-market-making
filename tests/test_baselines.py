@@ -1,12 +1,20 @@
 import numpy as np
 
 from rl_mm.backtest.metrics import aggregate_episode_metrics, compute_episode_metrics
-from rl_mm.strategies import FixedSpreadStrategy, InventorySkewStrategy
+from rl_mm.strategies import BaseStrategy, FixedSpreadStrategy, InventorySkewStrategy
 from scripts.run_baselines import print_comparison, run_strategy
 
 
 def observation(inventory: float) -> dict[str, np.ndarray]:
     return {"inventory": np.array(inventory, dtype=np.float32)}
+
+
+class NoQuoteStrategy(BaseStrategy):
+    name = "no_quote"
+
+    def select_action(self, observation: dict[str, np.ndarray]) -> int:
+        del observation
+        return 0
 
 
 def test_fixed_spread_always_selects_medium_quote() -> None:
@@ -32,6 +40,7 @@ def test_compute_episode_metrics() -> None:
         rewards=[1.0, -0.25, 0.5],
         pnls=[0.5, 0.25, 1.25],
         inventories=[0.0, 2.0, -3.0, -1.0],
+        quoted=[True, False, True],
     )
 
     assert metrics.total_pnl == 1.25
@@ -39,6 +48,8 @@ def test_compute_episode_metrics() -> None:
     assert metrics.max_abs_inventory == 3.0
     assert metrics.final_inventory == -1.0
     assert metrics.number_of_steps == 3
+    assert metrics.quoted_steps == 2
+    assert metrics.quote_rate == 2 / 3
 
 
 def test_aggregate_episode_metrics() -> None:
@@ -46,11 +57,13 @@ def test_aggregate_episode_metrics() -> None:
         rewards=[1.0, 2.0],
         pnls=[0.5, 1.0],
         inventories=[0.0, 1.0],
+        quoted=[True, True],
     )
     second = compute_episode_metrics(
         rewards=[-1.0, 1.0],
         pnls=[-0.5, 0.0],
         inventories=[0.0, -3.0],
+        quoted=[False, True],
     )
 
     aggregate = aggregate_episode_metrics([first, second])
@@ -65,6 +78,10 @@ def test_aggregate_episode_metrics() -> None:
     assert aggregate.final_inventory.std == 2.0
     assert aggregate.number_of_steps.mean == 2.0
     assert aggregate.number_of_steps.std == 0.0
+    assert aggregate.quoted_steps.mean == 1.5
+    assert aggregate.quoted_steps.std == 0.5
+    assert aggregate.quote_rate.mean == 0.75
+    assert aggregate.quote_rate.std == 0.25
 
 
 def test_run_strategy_aggregates_multiple_seeded_episodes() -> None:
@@ -78,6 +95,7 @@ def test_run_strategy_aggregates_multiple_seeded_episodes() -> None:
     assert aggregate.number_of_steps.mean == 3.0
     assert aggregate.number_of_steps.std == 0.0
     assert aggregate.max_abs_inventory.mean >= 0.0
+    assert aggregate.quote_rate.mean == 1.0
 
 
 def test_run_strategy_is_deterministic_for_same_seed() -> None:
@@ -106,5 +124,20 @@ def test_print_comparison_reports_mean_plus_std(capsys) -> None:
     assert "max_abs_inventory" in output
     assert "final_inventory" in output
     assert "number_of_steps" in output
+    assert "quote_rate" in output
     assert "fixed_spread" in output
     assert "+/-" in output
+
+
+def test_quote_rate_is_zero_for_always_no_quote() -> None:
+    aggregate = run_strategy(NoQuoteStrategy(), {"max_steps": 3}, episodes=2, seed=1)
+
+    assert aggregate.quote_rate.mean == 0.0
+    assert aggregate.quoted_steps.mean == 0.0
+
+
+def test_quote_rate_is_positive_for_fixed_spread() -> None:
+    aggregate = run_strategy(FixedSpreadStrategy(), {"max_steps": 3}, episodes=2, seed=1)
+
+    assert aggregate.quote_rate.mean > 0.0
+    assert aggregate.quoted_steps.mean > 0.0

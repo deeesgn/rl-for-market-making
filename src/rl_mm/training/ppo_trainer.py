@@ -130,6 +130,7 @@ def run_model_episode(PPO_model: PPO, *, env_config: dict[str, Any], seed: int) 
     rewards: list[float] = []
     pnls: list[float] = []
     inventories = [float(observation["inventory"][0])]
+    quoted: list[bool] = []
 
     terminated = False
     truncated = False
@@ -139,6 +140,12 @@ def run_model_episode(PPO_model: PPO, *, env_config: dict[str, Any], seed: int) 
         rewards.append(float(reward))
         pnls.append(float(info["pnl"]))
         inventories.append(float(observation["inventory"][0]))
+        quoted.append(bool(info["quoted"]))
 
     env.close()
-    return compute_episode_metrics(rewards=rewards, pnls=pnls, inventories=inventories)
+    return compute_episode_metrics(
+        rewards=rewards,
+        pnls=pnls,
+        inventories=inventories,
+        quoted=quoted,
+    )

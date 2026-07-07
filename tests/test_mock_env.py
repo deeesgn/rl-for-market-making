@@ -38,6 +38,23 @@ def test_step_updates_accounting_and_reward() -> None:
     assert "portfolio_value" in info
     assert "pnl" in info
     assert info["action_name"] == "narrow_symmetric"
+    assert info["quoted"] is True
+
+
+def test_no_quote_action_receives_penalty() -> None:
+    env = MockMarketMakingEnv(
+        seed=123,
+        max_steps=1,
+        price_volatility=0.0,
+        no_quote_penalty=0.25,
+    )
+    env.reset()
+
+    _, reward, _, _, info = env.step(0)
+
+    assert reward == -0.25
+    assert info["quoted"] is False
+    assert info["no_quote_penalty"] == 0.25
 
 
 def test_same_seed_and_actions_are_deterministic() -> None:

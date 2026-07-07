@@ -40,6 +40,7 @@ def run_strategy_episode(
     rewards: list[float] = []
     pnls: list[float] = []
     inventories = [float(observation["inventory"])]
+    quoted: list[bool] = []
 
     terminated = False
     truncated = False
@@ -49,8 +50,14 @@ def run_strategy_episode(
         rewards.append(float(reward))
         pnls.append(float(info["pnl"]))
         inventories.append(float(observation["inventory"]))
+        quoted.append(bool(info["quoted"]))
 
-    return compute_episode_metrics(rewards=rewards, pnls=pnls, inventories=inventories)
+    return compute_episode_metrics(
+        rewards=rewards,
+        pnls=pnls,
+        inventories=inventories,
+        quoted=quoted,
+    )
 
 
 def run_strategy(
@@ -79,6 +86,7 @@ def print_comparison(results: dict[str, AggregateMetrics]) -> None:
         "max_abs_inventory",
         "final_inventory",
         "number_of_steps",
+        "quote_rate",
     ]
     rows = []
     for name, metrics in results.items():
@@ -91,6 +99,7 @@ def print_comparison(results: dict[str, AggregateMetrics]) -> None:
                 "max_abs_inventory": format_summary(**row["max_abs_inventory"]),
                 "final_inventory": format_summary(**row["final_inventory"]),
                 "number_of_steps": format_summary(**row["number_of_steps"]),
+                "quote_rate": format_summary(**row["quote_rate"]),
             }
         )
 

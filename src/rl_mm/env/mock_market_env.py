@@ -50,6 +50,7 @@ class MockMarketMakingEnv(gym.Env):
         price_volatility: float = 0.001,
         drift: float = 0.0,
         inventory_penalty: float = 0.01,
+        no_quote_penalty: float = 0.001,
         fill_probability: float = 0.45,
         fill_decay: float = 0.03,
         return_window: int = 20,
@@ -64,6 +65,7 @@ class MockMarketMakingEnv(gym.Env):
         self.price_volatility = price_volatility
         self.drift = drift
         self.inventory_penalty = inventory_penalty
+        self.no_quote_penalty = no_quote_penalty
         self.fill_probability = fill_probability
         self.fill_decay = fill_decay
         self.return_window = return_window
@@ -153,7 +155,8 @@ class MockMarketMakingEnv(gym.Env):
         self.pnl = self.portfolio_value - initial_value
         value_change = self.portfolio_value - previous_value
         inventory_cost = self.inventory_penalty * float(self.inventory**2)
-        reward = value_change - inventory_cost
+        no_quote_cost = self.no_quote_penalty if int(action) == 0 else 0.0
+        reward = value_change - inventory_cost - no_quote_cost
 
         terminated = False
         truncated = self.step_count >= self.max_steps
@@ -165,6 +168,7 @@ class MockMarketMakingEnv(gym.Env):
             ask_price=ask_price,
             reward=reward,
             inventory_penalty=inventory_cost,
+            no_quote_penalty=no_quote_cost,
         )
         return self._observation(), float(reward), terminated, truncated, info
 
@@ -209,12 +213,15 @@ class MockMarketMakingEnv(gym.Env):
         ask_price: float | None = None,
         reward: float = 0.0,
         inventory_penalty: float = 0.0,
+        no_quote_penalty: float = 0.0,
     ) -> dict[str, Any]:
         quote = self.ACTIONS[action]
         action_name = "no_quote" if quote is None else quote.name
+        quoted = quote is not None
         return {
             "step": self.step_count,
             "action_name": action_name,
+            "quoted": quoted,
             "bid_filled": bid_filled,
             "ask_filled": ask_filled,
             "bid_price": bid_price,
@@ -223,4 +230,5 @@ class MockMarketMakingEnv(gym.Env):
             "pnl": self.pnl,
             "reward": reward,
             "inventory_penalty": inventory_penalty,
+            "no_quote_penalty": no_quote_penalty,
         }
