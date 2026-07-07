@@ -14,6 +14,10 @@ data:
   book_depth: 10
 trading:
   initial_capital: 10000
+  maker_fee: 0.0002
+  taker_fee: 0.00055
+  latency_ms: 0
+  max_inventory_btc: 0.02
 evaluation:
   seeds:
     - 42

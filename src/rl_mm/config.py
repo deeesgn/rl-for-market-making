@@ -28,6 +28,10 @@ class ExperimentProtocol:
     replay_frequency: str
     book_depth: int
     initial_capital: float
+    maker_fee: float
+    taker_fee: float
+    latency_ms: float
+    max_inventory_btc: float
     seeds: tuple[int, ...]
     evaluation_episodes: int
     required_metrics: tuple[str, ...]
@@ -96,7 +100,11 @@ def load_experiment_protocol(
         test_split=float(split["test"]),
         replay_frequency=str(data["replay_frequency"]),
         book_depth=int(data["book_depth"]),
-        initial_capital=float(trading["initial_capital"]),
+        initial_capital=parse_numeric_field(trading, "initial_capital"),
+        maker_fee=parse_numeric_field(trading, "maker_fee"),
+        taker_fee=parse_numeric_field(trading, "taker_fee"),
+        latency_ms=parse_numeric_field(trading, "latency_ms"),
+        max_inventory_btc=parse_numeric_field(trading, "max_inventory_btc"),
         seeds=tuple(int(seed) for seed in evaluation["seeds"]),
         evaluation_episodes=int(evaluation["episodes"]),
         required_metrics=tuple(str(metric) for metric in config["required_metrics"]),
@@ -116,6 +124,14 @@ def validate_experiment_protocol(protocol: ExperimentProtocol) -> None:
         raise ConfigValidationError("Book depth must be positive.")
     if protocol.initial_capital <= 0:
         raise ConfigValidationError("Initial capital must be positive.")
+    if protocol.maker_fee < 0:
+        raise ConfigValidationError("Maker fee must be non-negative.")
+    if protocol.taker_fee < 0:
+        raise ConfigValidationError("Taker fee must be non-negative.")
+    if protocol.latency_ms < 0:
+        raise ConfigValidationError("Latency must be non-negative.")
+    if protocol.max_inventory_btc <= 0:
+        raise ConfigValidationError("Max inventory must be positive.")
     if protocol.evaluation_episodes <= 0:
         raise ConfigValidationError("Evaluation episodes must be positive.")
 
@@ -133,3 +149,12 @@ def require_mapping(config: dict[str, Any], key: str) -> dict[str, Any]:
 
 def parse_date(value: Any) -> date:
     return date.fromisoformat(str(value))
+
+
+def parse_numeric_field(config: dict[str, Any], key: str) -> float:
+    if key not in config:
+        raise ConfigValidationError(f"Missing numeric field '{key}'.")
+    try:
+        return float(config[key])
+    except (TypeError, ValueError) as error:
+        raise ConfigValidationError(f"Field '{key}' must be numeric.") from error
