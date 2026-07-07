@@ -31,6 +31,27 @@ class BybitDownloadResult:
     bytes_written: int
 
 
+@dataclass(frozen=True)
+class BybitUrlCandidate:
+    name: str
+    dataset: str
+    symbol: str
+    date: date
+    filename: str
+    url: str
+
+
+@dataclass(frozen=True)
+class BybitUrlProbeResult:
+    candidate: BybitUrlCandidate
+    method: str
+    status_code: int | None
+    content_type: str | None
+    content_length: str | None
+    working: bool
+    error: str | None = None
+
+
 class BybitDownloadError(RuntimeError):
     """Raised when a Bybit archive request fails."""
 
@@ -51,6 +72,7 @@ def build_download_plan(
     start_date: str | None = None,
     end_date: str | None = None,
     max_files: int | None = None,
+    template_name: str | None = None,
 ) -> list[BybitDownloadPlan]:
     if max_files is not None and max_files < 0:
         raise ValueError("max_files must be non-negative")
@@ -76,20 +98,39 @@ def build_download_plan(
         template = url_templates.get(dataset, "")
         for current_date in dates:
             date_text = current_date.isoformat()
-            filename_template = filename_templates.get(
-                dataset,
-                "{symbol}_{dataset}_{date}.csv.gz",
-            )
-            filename = filename_template.format(
-                symbol=symbol,
-                dataset=dataset,
-                date=date_text,
-            )
-            url = (
-                template.format(symbol=symbol, date=date_text, filename=filename)
-                if template
-                else ""
-            )
+            if template_name is not None:
+                candidate = build_url_candidate(
+                    config,
+                    dataset=str(dataset),
+                    symbol=symbol,
+                    date_value=current_date,
+                    template_name=template_name,
+                )
+                filename = candidate.filename
+                url = candidate.url
+            else:
+                filename_template = filename_templates.get(
+                    dataset,
+                    "{symbol}_{dataset}_{date}.csv.gz",
+                )
+                filename = format_bybit_template(
+                    filename_template,
+                    symbol=symbol,
+                    dataset=str(dataset),
+                    date_value=current_date,
+                    filename="",
+                )
+                url = (
+                    format_bybit_template(
+                        template,
+                        symbol=symbol,
+                        dataset=str(dataset),
+                        date_value=current_date,
+                        filename=filename,
+                    )
+                    if template
+                    else ""
+                )
             plans.append(
                 BybitDownloadPlan(
                     dataset=str(dataset),
@@ -108,6 +149,140 @@ def build_download_plan(
     return plans
 
 
+def build_url_candidates(
+    config: dict[str, Any],
+    *,
+    dataset: str,
+    symbol: str,
+    date_value: date | str,
+) -> list[BybitUrlCandidate]:
+    get_schema(dataset)
+    current_date = parse_date_value(date_value)
+    candidates = []
+    for name, candidate_config in iter_candidate_template_configs(config, dataset=dataset):
+        candidates.append(
+            build_url_candidate_from_config(
+                name=name,
+                candidate_config=candidate_config,
+                dataset=dataset,
+                symbol=symbol,
+                date_value=current_date,
+            )
+        )
+    return candidates
+
+
+def build_url_candidate(
+    config: dict[str, Any],
+    *,
+    dataset: str,
+    symbol: str,
+    date_value: date | str,
+    template_name: str,
+) -> BybitUrlCandidate:
+    current_date = parse_date_value(date_value)
+    for name, candidate_config in iter_candidate_template_configs(config, dataset=dataset):
+        if name == template_name:
+            return build_url_candidate_from_config(
+                name=name,
+                candidate_config=candidate_config,
+                dataset=dataset,
+                symbol=symbol,
+                date_value=current_date,
+            )
+    known = ", ".join(name for name, _ in iter_candidate_template_configs(config, dataset=dataset))
+    raise ValueError(
+        f"Unknown template_name '{template_name}' for {dataset}. "
+        f"Known templates: {known or '<none>'}"
+    )
+
+
+def iter_candidate_template_configs(config: dict[str, Any], *, dataset: str):
+    candidates_by_dataset = config.get("candidate_url_templates", {})
+    candidates = candidates_by_dataset.get(dataset)
+    if candidates is None:
+        url_template = config.get("url_templates", {}).get(dataset, "")
+        filename_template = config.get("filename_templates", {}).get(
+            dataset,
+            "{symbol}_{dataset}_{date}.csv.gz",
+        )
+        if url_template:
+            yield "default", {
+                "filename_template": filename_template,
+                "url_template": url_template,
+            }
+        return
+
+    if isinstance(candidates, dict):
+        for name, candidate_config in candidates.items():
+            yield str(name), candidate_config
+        return
+
+    for index, candidate_config in enumerate(candidates, start=1):
+        name = str(candidate_config.get("name", f"candidate_{index}"))
+        yield name, candidate_config
+
+
+def build_url_candidate_from_config(
+    *,
+    name: str,
+    candidate_config: dict[str, Any],
+    dataset: str,
+    symbol: str,
+    date_value: date,
+) -> BybitUrlCandidate:
+    symbol = symbol.upper()
+    filename_template = candidate_config["filename_template"]
+    url_template = candidate_config["url_template"]
+    filename = format_bybit_template(
+        filename_template,
+        symbol=symbol,
+        dataset=dataset,
+        date_value=date_value,
+        filename="",
+    )
+    url = format_bybit_template(
+        url_template,
+        symbol=symbol,
+        dataset=dataset,
+        date_value=date_value,
+        filename=filename,
+    )
+    return BybitUrlCandidate(
+        name=name,
+        dataset=dataset,
+        symbol=symbol,
+        date=date_value,
+        filename=filename,
+        url=url,
+    )
+
+
+def format_bybit_template(
+    template: str,
+    *,
+    symbol: str,
+    dataset: str,
+    date_value: date,
+    filename: str,
+) -> str:
+    date_text = date_value.isoformat()
+    return template.format(
+        symbol=symbol,
+        symbol_lower=symbol.lower(),
+        dataset=dataset,
+        date=date_text,
+        date_compact=date_text.replace("-", ""),
+        filename=filename,
+    )
+
+
+def parse_date_value(value: date | str) -> date:
+    if isinstance(value, date):
+        return value
+    return datetime.fromisoformat(value).date()
+
+
 def iter_dates(start_date: str, end_date: str):
     current = datetime.fromisoformat(start_date).date()
     end = datetime.fromisoformat(end_date).date()
@@ -116,6 +291,77 @@ def iter_dates(start_date: str, end_date: str):
     while current <= end:
         yield current
         current += timedelta(days=1)
+
+
+def probe_url_candidate(
+    candidate: BybitUrlCandidate,
+    *,
+    timeout: float = 10.0,
+    request_head: Any | None = None,
+    request_get: Any | None = None,
+) -> BybitUrlProbeResult:
+    head = request_head or requests.head
+    get = request_get or requests.get
+
+    try:
+        response = head(candidate.url, timeout=timeout, allow_redirects=True)
+        if response.status_code in {405, 501}:
+            return probe_url_candidate_with_get(candidate, timeout=timeout, request_get=get)
+        return build_probe_result(candidate, method="HEAD", response=response)
+    except requests.RequestException as error:
+        return BybitUrlProbeResult(
+            candidate=candidate,
+            method="HEAD",
+            status_code=None,
+            content_type=None,
+            content_length=None,
+            working=False,
+            error=str(error),
+        )
+
+
+def probe_url_candidate_with_get(
+    candidate: BybitUrlCandidate,
+    *,
+    timeout: float,
+    request_get: Any,
+) -> BybitUrlProbeResult:
+    try:
+        response = request_get(candidate.url, timeout=timeout, stream=True)
+        try:
+            return build_probe_result(candidate, method="GET", response=response)
+        finally:
+            close = getattr(response, "close", None)
+            if close is not None:
+                close()
+    except requests.RequestException as error:
+        return BybitUrlProbeResult(
+            candidate=candidate,
+            method="GET",
+            status_code=None,
+            content_type=None,
+            content_length=None,
+            working=False,
+            error=str(error),
+        )
+
+
+def build_probe_result(
+    candidate: BybitUrlCandidate,
+    *,
+    method: str,
+    response: Any,
+) -> BybitUrlProbeResult:
+    status_code = int(response.status_code)
+    headers = response.headers
+    return BybitUrlProbeResult(
+        candidate=candidate,
+        method=method,
+        status_code=status_code,
+        content_type=headers.get("content-type"),
+        content_length=headers.get("content-length"),
+        working=200 <= status_code < 400,
+    )
 
 
 def download_file(

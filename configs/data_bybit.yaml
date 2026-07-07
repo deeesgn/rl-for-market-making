@@ -12,11 +12,32 @@ timeout_seconds: 30
 # Archive filename templates are configurable so a dataset can use .csv,
 # .csv.gz, or .zip without changing downloader code.
 filename_templates:
-  trades: "{symbol}_{dataset}_{date}.csv.gz"
+  trades: "{symbol}{date}.csv.gz"
   orderbook: "{symbol}_{dataset}_{date}.csv.gz"
 # URL templates are intentionally configurable because Bybit archive paths can
 # change by market, dataset, and archive format. Supported placeholders:
-# {symbol}, {date}, {filename}
+# {symbol}, {symbol_lower}, {dataset}, {date}, {date_compact}, {filename}
 url_templates:
   trades: "https://public.bybit.com/trading/{symbol}/{filename}"
   orderbook: "https://public.bybit.com/orderbook/{symbol}/{filename}"
+candidate_url_templates:
+  trades:
+    public_trading_symbol_dataset_date_csv_gz:
+      filename_template: "{symbol}_{dataset}_{date}.csv.gz"
+      url_template: "https://public.bybit.com/trading/{symbol}/{filename}"
+    public_trading_symbol_date_csv_gz:
+      filename_template: "{symbol}{date}.csv.gz"
+      url_template: "https://public.bybit.com/trading/{symbol}/{filename}"
+    public_trading_symbol_date_csv:
+      filename_template: "{symbol}{date}.csv"
+      url_template: "https://public.bybit.com/trading/{symbol}/{filename}"
+    public_trading_date_symbol_csv_gz:
+      filename_template: "{date}_{symbol}.csv.gz"
+      url_template: "https://public.bybit.com/trading/{symbol}/{filename}"
+  orderbook:
+    public_orderbook_symbol_dataset_date_csv_gz:
+      filename_template: "{symbol}_{dataset}_{date}.csv.gz"
+      url_template: "https://public.bybit.com/orderbook/{symbol}/{filename}"
+    public_orderbook_symbol_date_csv_gz:
+      filename_template: "{symbol}{date}.csv.gz"
+      url_template: "https://public.bybit.com/orderbook/{symbol}/{filename}"

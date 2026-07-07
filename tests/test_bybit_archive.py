@@ -122,3 +122,60 @@ def test_verify_bybit_archive_dry_run_prints_url_and_target(
     assert "Bybit archive verification dry run" in output
     assert "https://example.test/BTCUSDT/BTCUSDT-2024-01-01.zip" in output
     assert str(tmp_path / "verify/trades/BTCUSDT/BTCUSDT-2024-01-01.zip") in output
+
+
+def test_verify_bybit_archive_dry_run_uses_selected_template_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "data_bybit.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "symbol: BTCUSDT",
+                'start_date: "2024-01-01"',
+                'end_date: "2024-01-01"',
+                "datasets:",
+                "  - trades",
+                f"raw_dir: {tmp_path / 'raw'}",
+                f"processed_dir: {tmp_path / 'processed'}",
+                "candidate_url_templates:",
+                "  trades:",
+                "    first:",
+                '      filename_template: "{symbol}-first.csv"',
+                '      url_template: "https://first.test/{filename}"',
+                "    selected:",
+                '      filename_template: "{symbol}-selected.zip"',
+                '      url_template: "https://selected.test/{filename}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_bybit_archive.py",
+            "--config",
+            str(config_path),
+            "--dataset",
+            "trades",
+            "--symbol",
+            "BTCUSDT",
+            "--date",
+            "2024-01-01",
+            "--output-dir",
+            str(tmp_path / "verify"),
+            "--template-name",
+            "selected",
+        ],
+    )
+
+    verify_archive_main()
+
+    output = capsys.readouterr().out
+    assert "template_name: selected" in output
+    assert "https://selected.test/BTCUSDT-selected.zip" in output
+    assert str(tmp_path / "verify/trades/BTCUSDT/BTCUSDT-selected.zip") in output

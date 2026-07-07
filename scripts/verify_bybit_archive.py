@@ -17,6 +17,7 @@ def main() -> None:
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--date", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--template-name")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
 
@@ -32,11 +33,14 @@ def main() -> None:
         start_date=args.date,
         end_date=args.date,
         max_files=1,
+        template_name=args.template_name,
     )
     item = plan[0]
 
     if not args.execute:
         print("Bybit archive verification dry run")
+        if args.template_name:
+            print(f"template_name: {args.template_name}")
         print(f"url: {item.url}")
         print(f"target_path: {item.raw_path}")
         return
