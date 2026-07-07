@@ -14,7 +14,7 @@ run-mock:
 	python scripts/run_mock_env.py --config configs/env_mock.yaml
 
 baselines:
-	python scripts/run_baselines.py --config configs/env_mock.yaml
+	python scripts/run_baselines.py --episodes 20 --seed 42 --config configs/env_mock.yaml
 
 lint:
 	python -m ruff check src tests scripts

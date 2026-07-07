@@ -8,7 +8,12 @@ from typing import Any
 
 import yaml
 
-from rl_mm.backtest.metrics import EpisodeMetrics, compute_episode_metrics
+from rl_mm.backtest.metrics import (
+    AggregateMetrics,
+    EpisodeMetrics,
+    aggregate_episode_metrics,
+    compute_episode_metrics,
+)
 from rl_mm.env import MockMarketMakingEnv
 from rl_mm.strategies import BaseStrategy, FixedSpreadStrategy, InventorySkewStrategy
 
@@ -22,8 +27,14 @@ def load_config(path: Path) -> dict[str, Any]:
     return config
 
 
-def run_strategy(strategy: BaseStrategy, env_config: dict[str, Any]) -> EpisodeMetrics:
-    env = MockMarketMakingEnv(**env_config)
+def run_strategy_episode(
+    strategy: BaseStrategy,
+    env_config: dict[str, Any],
+    *,
+    seed: int,
+) -> EpisodeMetrics:
+    episode_config = {**env_config, "seed": seed}
+    env = MockMarketMakingEnv(**episode_config)
     observation, _ = env.reset()
 
     rewards: list[float] = []
@@ -42,7 +53,25 @@ def run_strategy(strategy: BaseStrategy, env_config: dict[str, Any]) -> EpisodeM
     return compute_episode_metrics(rewards=rewards, pnls=pnls, inventories=inventories)
 
 
-def print_comparison(results: dict[str, EpisodeMetrics]) -> None:
+def run_strategy(
+    strategy: BaseStrategy,
+    env_config: dict[str, Any],
+    *,
+    episodes: int,
+    seed: int,
+) -> AggregateMetrics:
+    episode_metrics = [
+        run_strategy_episode(strategy, env_config, seed=seed + episode_index)
+        for episode_index in range(episodes)
+    ]
+    return aggregate_episode_metrics(episode_metrics)
+
+
+def format_summary(mean: float, std: float) -> str:
+    return f"{mean:.4f} +/- {std:.4f}"
+
+
+def print_comparison(results: dict[str, AggregateMetrics]) -> None:
     columns = [
         "strategy",
         "total_pnl",
@@ -57,11 +86,11 @@ def print_comparison(results: dict[str, EpisodeMetrics]) -> None:
         rows.append(
             {
                 "strategy": name,
-                "total_pnl": f"{row['total_pnl']:.4f}",
-                "total_reward": f"{row['total_reward']:.4f}",
-                "max_abs_inventory": f"{row['max_abs_inventory']:.0f}",
-                "final_inventory": f"{row['final_inventory']:.0f}",
-                "number_of_steps": str(row["number_of_steps"]),
+                "total_pnl": format_summary(**row["total_pnl"]),
+                "total_reward": format_summary(**row["total_reward"]),
+                "max_abs_inventory": format_summary(**row["max_abs_inventory"]),
+                "final_inventory": format_summary(**row["final_inventory"]),
+                "number_of_steps": format_summary(**row["number_of_steps"]),
             }
         )
 
@@ -79,8 +108,13 @@ def print_comparison(results: dict[str, EpisodeMetrics]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run mock market-making baselines.")
+    parser.add_argument("--episodes", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--config", type=Path, default=Path("configs/env_mock.yaml"))
     args = parser.parse_args()
+
+    if args.episodes < 1:
+        raise ValueError("--episodes must be at least 1")
 
     env_config = load_config(args.config)
     strategies: list[BaseStrategy] = [
@@ -88,7 +122,15 @@ def main() -> None:
         InventorySkewStrategy(),
     ]
 
-    results = {strategy.name: run_strategy(strategy, env_config) for strategy in strategies}
+    results = {
+        strategy.name: run_strategy(
+            strategy,
+            env_config,
+            episodes=args.episodes,
+            seed=args.seed,
+        )
+        for strategy in strategies
+    }
     print_comparison(results)
 
 

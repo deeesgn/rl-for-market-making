@@ -1,6 +1,6 @@
 import numpy as np
 
-from rl_mm.backtest.metrics import compute_episode_metrics
+from rl_mm.backtest.metrics import aggregate_episode_metrics, compute_episode_metrics
 from rl_mm.strategies import FixedSpreadStrategy, InventorySkewStrategy
 
 
@@ -38,3 +38,29 @@ def test_compute_episode_metrics() -> None:
     assert metrics.max_abs_inventory == 3.0
     assert metrics.final_inventory == -1.0
     assert metrics.number_of_steps == 3
+
+
+def test_aggregate_episode_metrics() -> None:
+    first = compute_episode_metrics(
+        rewards=[1.0, 2.0],
+        pnls=[0.5, 1.0],
+        inventories=[0.0, 1.0],
+    )
+    second = compute_episode_metrics(
+        rewards=[-1.0, 1.0],
+        pnls=[-0.5, 0.0],
+        inventories=[0.0, -3.0],
+    )
+
+    aggregate = aggregate_episode_metrics([first, second])
+
+    assert aggregate.total_pnl.mean == 0.5
+    assert aggregate.total_pnl.std == 0.5
+    assert aggregate.total_reward.mean == 1.5
+    assert aggregate.total_reward.std == 1.5
+    assert aggregate.max_abs_inventory.mean == 2.0
+    assert aggregate.max_abs_inventory.std == 1.0
+    assert aggregate.final_inventory.mean == -1.0
+    assert aggregate.final_inventory.std == 2.0
+    assert aggregate.number_of_steps.mean == 2.0
+    assert aggregate.number_of_steps.std == 0.0
