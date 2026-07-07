@@ -34,9 +34,10 @@ def main() -> None:
         "total_pnl",
         "total_reward",
         "max_abs_inventory",
+        "mean_abs_inventory",
         "final_inventory",
-        "number_of_steps",
         "quote_rate",
+        "fill_rate",
     ]:
         print(f"{name.ljust(17)}  {format_summary(**row[name])}")
 

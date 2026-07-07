@@ -41,22 +41,31 @@ def run_strategy_episode(
     pnls: list[float] = []
     inventories = [float(observation["inventory"])]
     quoted: list[bool] = []
+    actions: list[int] = []
+    bid_fills: list[bool] = []
+    ask_fills: list[bool] = []
 
     terminated = False
     truncated = False
     while not (terminated or truncated):
         action = strategy.select_action(observation)
         observation, reward, terminated, truncated, info = env.step(action)
+        actions.append(int(action))
         rewards.append(float(reward))
         pnls.append(float(info["pnl"]))
         inventories.append(float(observation["inventory"]))
         quoted.append(bool(info["quoted"]))
+        bid_fills.append(bool(info["bid_filled"]))
+        ask_fills.append(bool(info["ask_filled"]))
 
     return compute_episode_metrics(
         rewards=rewards,
         pnls=pnls,
         inventories=inventories,
         quoted=quoted,
+        actions=actions,
+        bid_fills=bid_fills,
+        ask_fills=ask_fills,
     )
 
 
@@ -84,9 +93,10 @@ def print_comparison(results: dict[str, AggregateMetrics]) -> None:
         "total_pnl",
         "total_reward",
         "max_abs_inventory",
+        "mean_abs_inventory",
         "final_inventory",
-        "number_of_steps",
         "quote_rate",
+        "fill_rate",
     ]
     rows = []
     for name, metrics in results.items():
@@ -97,9 +107,10 @@ def print_comparison(results: dict[str, AggregateMetrics]) -> None:
                 "total_pnl": format_summary(**row["total_pnl"]),
                 "total_reward": format_summary(**row["total_reward"]),
                 "max_abs_inventory": format_summary(**row["max_abs_inventory"]),
+                "mean_abs_inventory": format_summary(**row["mean_abs_inventory"]),
                 "final_inventory": format_summary(**row["final_inventory"]),
-                "number_of_steps": format_summary(**row["number_of_steps"]),
                 "quote_rate": format_summary(**row["quote_rate"]),
+                "fill_rate": format_summary(**row["fill_rate"]),
             }
         )
 

@@ -23,7 +23,7 @@ eval-mock:
 	python scripts/evaluate_mock_ppo.py --episodes 20 --seed 100 --config configs/env_mock.yaml --model-path models/mock_ppo.zip
 
 compare-mock:
-	python scripts/compare_mock_strategies.py --episodes 20 --seed 100 --config configs/env_mock.yaml --model-path models/mock_ppo.zip
+	python scripts/compare_mock_strategies.py --episodes 20 --seed 100 --config configs/env_mock.yaml --model-path models/mock_ppo.zip --show-actions
 
 lint:
 	python -m ruff check src tests scripts

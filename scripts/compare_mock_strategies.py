@@ -61,6 +61,43 @@ def compare_strategies(
     return results
 
 
+def print_action_distribution(results: dict[str, AggregateMetrics]) -> None:
+    """Print mean action counts per strategy."""
+
+    action_columns = [
+        "action_0_no_quote",
+        "action_1_narrow",
+        "action_2_medium",
+        "action_3_wide",
+        "action_4_skew_sell",
+        "action_5_skew_buy",
+    ]
+    columns = ["strategy", "action_0", "action_1", "action_2", "action_3", "action_4", "action_5"]
+    rows = []
+    for strategy_name, metrics in results.items():
+        metric_row = metrics.as_dict()
+        rows.append(
+            {
+                "strategy": strategy_name,
+                **{
+                    column: f"{metric_row[action_column]['mean']:.1f}"
+                    for column, action_column in zip(columns[1:], action_columns, strict=True)
+                },
+            }
+        )
+
+    widths = {
+        column: max(len(column), *(len(row[column]) for row in rows))
+        for column in columns
+    }
+    print()
+    print("Action distribution, mean count per episode")
+    print("  ".join(column.ljust(widths[column]) for column in columns))
+    print("  ".join("-" * widths[column] for column in columns))
+    for row in rows:
+        print("  ".join(row[column].ljust(widths[column]) for column in columns))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Compare fixed-spread, inventory-skew, and PPO on the mock env."
@@ -69,6 +106,7 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--model-path", type=Path, default=Path("models/mock_ppo.zip"))
+    parser.add_argument("--show-actions", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -82,6 +120,8 @@ def main() -> None:
         parser.exit(status=1, message=f"{error}\n")
 
     print_comparison(results)
+    if args.show_actions:
+        print_action_distribution(results)
 
 
 if __name__ == "__main__":

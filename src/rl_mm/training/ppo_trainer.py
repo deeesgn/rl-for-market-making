@@ -131,16 +131,23 @@ def run_model_episode(PPO_model: PPO, *, env_config: dict[str, Any], seed: int) 
     pnls: list[float] = []
     inventories = [float(observation["inventory"][0])]
     quoted: list[bool] = []
+    actions: list[int] = []
+    bid_fills: list[bool] = []
+    ask_fills: list[bool] = []
 
     terminated = False
     truncated = False
     while not (terminated or truncated):
         action, _ = PPO_model.predict(observation, deterministic=True)
-        observation, reward, terminated, truncated, info = env.step(int(action))
+        action_int = int(action)
+        observation, reward, terminated, truncated, info = env.step(action_int)
+        actions.append(action_int)
         rewards.append(float(reward))
         pnls.append(float(info["pnl"]))
         inventories.append(float(observation["inventory"][0]))
         quoted.append(bool(info["quoted"]))
+        bid_fills.append(bool(info["bid_filled"]))
+        ask_fills.append(bool(info["ask_filled"]))
 
     env.close()
     return compute_episode_metrics(
@@ -148,4 +155,7 @@ def run_model_episode(PPO_model: PPO, *, env_config: dict[str, Any], seed: int) 
         pnls=pnls,
         inventories=inventories,
         quoted=quoted,
+        actions=actions,
+        bid_fills=bid_fills,
+        ask_fills=ask_fills,
     )
