@@ -10,6 +10,7 @@ from rl_mm.data.orderbook_parser import (
     convert_orderbook_zip_to_parquet,
     iter_orderbook_messages_from_zip,
     iter_sampled_orderbook_rows,
+    orderbook_columns,
 )
 
 
@@ -115,6 +116,39 @@ def test_convert_orderbook_zip_to_parquet_writes_expected_columns(tmp_path: Path
     assert dataframe.loc[0, "orderbook_imbalance"] == 10 / 30
 
 
+def test_convert_orderbook_zip_supports_ob200_and_ob500_topics(tmp_path: Path) -> None:
+    dataframes = []
+    for topic_depth in (200, 500):
+        zip_path = write_orderbook_zip(
+            tmp_path / f"orderbook_{topic_depth}.zip",
+            [
+                orderbook_message(
+                    "snapshot",
+                    1_735_689_600_000,
+                    bids=[[str(100 - index), "1"] for index in range(12)],
+                    asks=[[str(101 + index), "2"] for index in range(12)],
+                    topic_depth=topic_depth,
+                )
+            ],
+        )
+        output_path = tmp_path / f"processed_{topic_depth}.parquet"
+        convert_orderbook_zip_to_parquet(
+            zip_path,
+            output_path=output_path,
+            symbol="BTCUSDT",
+            depth=10,
+            frequency="1s",
+        )
+        dataframes.append(pd.read_parquet(output_path))
+
+    assert list(dataframes[0].columns) == orderbook_columns(10)
+    assert list(dataframes[1].columns) == orderbook_columns(10)
+    assert dataframes[0].loc[0, "bid_price_10"] == 91.0
+    assert dataframes[1].loc[0, "bid_price_10"] == 91.0
+    assert dataframes[0].loc[0, "ask_price_10"] == 110.0
+    assert dataframes[1].loc[0, "ask_price_10"] == 110.0
+
+
 def orderbook_message(
     message_type: str,
     timestamp_ms: int,
@@ -123,9 +157,10 @@ def orderbook_message(
     asks: list[list[str]],
     update_id: int = 1,
     sequence: int = 1,
+    topic_depth: int = 500,
 ) -> dict:
     return {
-        "topic": "orderbook.500.BTCUSDT",
+        "topic": f"orderbook.{topic_depth}.BTCUSDT",
         "type": message_type,
         "ts": timestamp_ms,
         "cts": timestamp_ms,

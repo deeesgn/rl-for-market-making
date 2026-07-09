@@ -1,4 +1,4 @@
-.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run bybit-download-dry-run bybit-download-sample discover-bybit-urls discover-bybit-orderbook-urls discover-bybit-orderbook-dates verify-bybit-archive-dry-run verify-bybit-archive-sample verify-bybit-orderbook-dry-run verify-bybit-orderbook-sample inspect-bybit-sample convert-bybit-sample convert-bybit-verified convert-orderbook-2025-dry-run convert-orderbook-2025 show-splits check-bybit-sample build-bybit-manifest lint
+.PHONY: install test smoke run-mock baselines train-mock eval-mock compare-mock stress-mock train-mock-randomized eval-mock-randomized compare-mock-regimes bybit-dry-run bybit-download-dry-run bybit-download-sample discover-bybit-urls discover-bybit-orderbook-urls discover-bybit-orderbook-dates verify-bybit-archive-dry-run verify-bybit-archive-sample verify-bybit-orderbook-dry-run verify-bybit-orderbook-sample inspect-bybit-sample convert-bybit-sample convert-bybit-verified convert-orderbook-2025-dry-run list-orderbook-2025-remote convert-orderbook-2025 convert-orderbook-2025-listed convert-orderbook-2025-listed-robust convert-orderbook-2025-continue check-orderbook-2025-coverage repair-orderbook-2025 show-splits check-bybit-sample build-bybit-manifest lint
 
 install:
 	python -m pip install --upgrade pip
@@ -79,8 +79,26 @@ convert-bybit-verified:
 convert-orderbook-2025-dry-run:
 	python scripts/download_convert_orderbook_range.py --symbol BTCUSDT --start-date 2025-01-01 --end-date 2025-12-31 --output-dir data/processed/bybit/orderbook --raw-temp-dir data/raw/bybit/tmp/orderbook --depth 10 --frequency 1s --dry-run
 
+list-orderbook-2025-remote:
+	python scripts/download_convert_orderbook_range.py --symbol BTCUSDT --start-date 2025-01-01 --end-date 2025-12-31 --output-dir data/processed/bybit/orderbook --raw-temp-dir data/raw/bybit/tmp/orderbook --depth 10 --frequency 1s --dry-run
+
 convert-orderbook-2025:
 	python scripts/download_convert_orderbook_range.py --symbol BTCUSDT --start-date 2025-01-01 --end-date 2025-12-31 --output-dir data/processed/bybit/orderbook --raw-temp-dir data/raw/bybit/tmp/orderbook --depth 10 --frequency 1s --sleep-seconds 1 --retries 3
+
+convert-orderbook-2025-listed:
+	python scripts/download_convert_orderbook_range.py --symbol BTCUSDT --start-date 2025-01-01 --end-date 2025-12-31 --output-dir data/processed/bybit/orderbook --raw-temp-dir data/raw/bybit/tmp/orderbook --depth 10 --frequency 1s --sleep-seconds 1 --retries 3
+
+convert-orderbook-2025-listed-robust:
+	python scripts/download_convert_orderbook_range.py --symbol BTCUSDT --start-date 2025-01-01 --end-date 2025-12-31 --output-dir data/processed/bybit/orderbook --raw-temp-dir data/raw/bybit/tmp/orderbook --depth 10 --frequency 1s --sleep-seconds 2 --retries 8 --connect-timeout 30 --read-timeout 300 --retry-backoff-seconds 30
+
+convert-orderbook-2025-continue:
+	python scripts/download_convert_orderbook_range.py --symbol BTCUSDT --start-date 2025-08-21 --end-date 2025-12-31 --output-dir data/processed/bybit/orderbook --raw-temp-dir data/raw/bybit/tmp/orderbook --depth 10 --frequency 1s --sleep-seconds 1 --retries 3
+
+check-orderbook-2025-coverage:
+	python scripts/check_orderbook_coverage.py --input-dir data/processed/bybit/orderbook/BTCUSDT --symbol BTCUSDT --start-date 2025-01-01 --end-date 2025-12-31 --missing-output data/processed/bybit/orderbook/missing_orderbook_2025.txt
+
+repair-orderbook-2025:
+	python scripts/download_convert_orderbook_range.py --symbol BTCUSDT --start-date 2025-01-01 --end-date 2025-12-31 --output-dir data/processed/bybit/orderbook --raw-temp-dir data/raw/bybit/tmp/orderbook --depth 10 --frequency 1s --sleep-seconds 2 --retries 10 --connect-timeout 30 --read-timeout 300 --retry-backoff-seconds 45 --only-missing
 
 show-splits:
 	python scripts/show_data_splits.py --protocol configs/experiment_protocol.yaml
