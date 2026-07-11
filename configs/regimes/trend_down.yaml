@@ -1,6 +1,0 @@
-name: trend_down
-overrides:
-  price_volatility: 0.001
-  drift: -0.0005
-  bid_fill_multiplier: 1.0
-  ask_fill_multiplier: 1.0

@@ -15,7 +15,6 @@ dependencies = [
   "pyarrow>=15.0",
   "PyYAML>=6.0",
   "requests>=2.31",
-  "stable-baselines3>=2.3",
 ]
 
 [tool.setuptools.packages.find]

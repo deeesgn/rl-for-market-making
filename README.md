@@ -1,92 +1,109 @@
 # RL for Market Making
 
-Docker-ready skeleton for a quant research project on RL market making with inventory risk control.
-
-The eventual goal is to train an RL agent that places bid and ask quotes on historical Bybit order book data with `hftbacktest`, compare it with fixed-spread and Avellaneda-Stoikov baselines, and report PnL/risk metrics.
-
-This version intentionally contains no RL training, Bybit ingestion, `hftbacktest` integration, real order book data, or production trading logic. It does include a mock Gymnasium environment and two simple rule-based baselines for early mechanics checks.
+A compact quant research project for market-making experiments with inventory risk control.
+The current repository contains a deterministic mock Gymnasium environment, two rule-based
+baselines, and a listing-driven pipeline for converting Bybit BTCUSDT orderbook archives into
+Top-10 parquet data sampled at one second. RL training and `hftbacktest` integration are not part
+of the current working path.
 
 ## Project Layout
 
 ```text
 .
 ├── configs/
+│   └── env_mock.yaml
 ├── data/
-│   └── sample/
-├── models/
-├── reports/
-│   └── figures/
+│   ├── raw/                         # ignored local downloads
+│   └── processed/bybit/orderbook/   # ignored parquet output
+├── models/                          # ignored local model output
 ├── scripts/
+│   ├── check_orderbook_ready.py
+│   ├── download_convert_orderbook_range.py
 │   ├── run_baselines.py
 │   ├── run_mock_env.py
 │   └── smoke_test.py
-├── src/
-│   └── rl_mm/
+├── src/rl_mm/
+│   ├── backtest/
+│   ├── data/
+│   ├── env/
+│   └── strategies/
 ├── tests/
-│   ├── test_baselines.py
-│   ├── test_import.py
-│   └── test_mock_env.py
 ├── Dockerfile
 ├── Makefile
-├── README.md
 ├── pyproject.toml
 └── requirements.txt
 ```
 
-## Local Quickstart
+## Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 make install
-make test
 make smoke
-make lint
 ```
 
-## Docker Quickstart
+Docker remains available for a clean smoke-test environment:
 
 ```bash
 docker build -t rl-mm .
 docker run --rm rl-mm
 ```
 
-Run the test suite in the image:
+## Tests
+
+Run the active test suite and lint checks:
 
 ```bash
-docker run --rm rl-mm python -m pytest
+make test
+make lint
 ```
 
-## Mock Market Environment
+## Mock Market Making
 
-The first runnable market-making component is a tiny Gymnasium environment that simulates a random-walk mid price, probabilistic bid/ask fills, inventory, cash, PnL, and an inventory-aware reward.
+Run one deterministic mock episode or compare the fixed-spread and inventory-skew baselines:
 
 ```bash
 make run-mock
-```
-
-The mock config lives at `configs/env_mock.yaml`. It is only for testing mechanics with the mock environment and simple rule-based baselines before adding RL training, Bybit data, `hftbacktest`, real order book data, or production trading logic.
-
-## Mock Baselines
-
-Two simple rule-based strategies can be compared over multiple seeded mock episodes:
-
-- `FixedSpreadStrategy`: always sends action `2`, the medium symmetric quote.
-- `InventorySkewStrategy`: sends action `4` to reduce long inventory, action `5` to reduce short inventory, and action `2` otherwise.
-
-```bash
 make baselines
 ```
 
-This runs `scripts/run_baselines.py` with 20 episodes and seed 42, then prints `mean +/- std` for total PnL, total reward, max absolute inventory, final inventory, and number of steps. You can also run it directly:
+## Convert 2025 Orderbook Data
+
+The converter fetches the exact remote BTCUSDT archive listing, processes only listed files,
+streams each ZIP through the Top-10 parser, writes parquet atomically, and resumes by skipping
+completed dates:
 
 ```bash
-python scripts/run_baselines.py --episodes 20 --seed 42 --config configs/env_mock.yaml
+make convert-orderbook-2025-listed-robust
 ```
 
-## Notes
+To retry only dates whose parquet output is missing:
 
-- `src/rl_mm/` is the importable Python package.
-- `data/sample/` is for tiny checked-in sample fixtures only.
-- `models/` and `reports/figures/` are placeholder output directories.
-- Generated data, reports, model files, caches, and virtual environments are ignored by Git.
+```bash
+make repair-orderbook-2025
+```
+
+Raw archives are temporary unless explicitly retained. Processed daily parquet files are stored
+under:
+
+```text
+data/processed/bybit/orderbook/BTCUSDT/
+```
+
+Raw and processed market data are excluded from Git.
+
+## Dataset Readiness
+
+Validate 2025 coverage, schema consistency, timestamp ordering, duplicate timestamps, best
+bid/ask validity, spread, mid-price, and imbalance bounds:
+
+```bash
+make check-orderbook-ready
+```
+
+The command prints a terminal summary and writes the small local report:
+
+```text
+data/processed/bybit/orderbook/orderbook_ready_2025.json
+```
