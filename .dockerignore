@@ -7,11 +7,6 @@ __pycache__
 *.pyc
 outputs
 data/*
-!data/sample
-!data/sample/.gitkeep
 reports/*
-!reports/figures
-!reports/figures/.gitkeep
 models/*
-!models/.gitkeep
 notebooks/.ipynb_checkpoints

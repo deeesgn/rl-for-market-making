@@ -11,9 +11,6 @@ COPY src ./src
 COPY scripts ./scripts
 COPY tests ./tests
 COPY configs ./configs
-COPY data/sample ./data/sample
-COPY reports/figures ./reports/figures
-COPY models ./models
 
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt

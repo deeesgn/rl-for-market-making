@@ -1,10 +1,9 @@
 # RL for Market Making
 
 A compact quant research project for market-making experiments with inventory risk control.
-The current repository contains a deterministic mock Gymnasium environment, two rule-based
-baselines, and a listing-driven pipeline for converting Bybit BTCUSDT orderbook archives into
-Top-10 parquet data sampled at one second. RL training and `hftbacktest` integration are not part
-of the current working path.
+The repository includes mock mechanics, a listing-driven Bybit BTCUSDT Top-10 orderbook pipeline,
+one-second trade aggregation, a real-data replay environment, rule-based baselines, and a minimal
+PPO experiment. `hftbacktest` integration is not part of the current working path.
 
 ## Project Layout
 
@@ -13,14 +12,14 @@ of the current working path.
 ├── configs/
 │   └── env_mock.yaml
 ├── data/
-│   ├── raw/                         # ignored local downloads
-│   └── processed/bybit/orderbook/   # ignored parquet output
-├── models/                          # ignored local model output
+│   └── processed/bybit/orderbook/   # ignored local parquet output
 ├── scripts/
 │   ├── check_orderbook_ready.py
 │   ├── download_convert_orderbook_range.py
 │   ├── run_baselines.py
 │   ├── run_mock_env.py
+│   ├── run_real_orderbook_baselines.py
+│   ├── run_real_experiment.py
 │   └── smoke_test.py
 ├── src/rl_mm/
 │   ├── backtest/
@@ -67,6 +66,32 @@ Run one deterministic mock episode or compare the fixed-spread and inventory-ske
 make run-mock
 make baselines
 ```
+
+Run the same rule-based baselines on processed BTCUSDT orderbook snapshots:
+
+```bash
+make real-baselines
+```
+
+Run the complete seven-day trade preparation, PPO training, and common-window evaluation smoke
+experiment:
+
+```bash
+make real-experiment-smoke
+```
+
+The full-year workflow remains explicit and resumable:
+
+```bash
+make real-trades-2025
+make train-real
+make eval-real
+```
+
+Processed trades are stored under `data/processed/bybit/trades/BTCUSDT/`. PPO models are local,
+ignored outputs under `models/` and are saved separately as `real_ppo_seed42.zip`,
+`real_ppo_seed100.zip`, and `real_ppo_seed200.zip`. Existing completed models are reused; pass
+`--force-train` directly to `run_real_experiment.py` only when deliberate retraining is needed.
 
 ## Convert 2025 Orderbook Data
 

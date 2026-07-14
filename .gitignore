@@ -16,13 +16,8 @@ venv/
 
 # Data and generated artifacts
 data/*
-!data/sample/
-!data/sample/.gitkeep
 reports/*
-!reports/figures/
-!reports/figures/.gitkeep
 models/*
-!models/.gitkeep
 
 # Local outputs
 outputs/
