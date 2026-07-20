@@ -46,13 +46,10 @@ def test_compute_episode_metrics() -> None:
     assert metrics.total_pnl == 1.25
     assert metrics.total_reward == 1.25
     assert metrics.max_abs_inventory == 3.0
-    assert metrics.mean_abs_inventory == 1.5
-    assert round(metrics.inventory_std, 6) == 1.802776
     assert metrics.final_inventory == -1.0
     assert metrics.number_of_steps == 3
     assert metrics.quoted_steps == 2
     assert metrics.quote_rate == 2 / 3
-    assert metrics.fill_rate == 0.0
 
 
 def test_aggregate_episode_metrics() -> None:
@@ -61,18 +58,12 @@ def test_aggregate_episode_metrics() -> None:
         pnls=[0.5, 1.0],
         inventories=[0.0, 1.0],
         quoted=[True, True],
-        actions=[2, 2],
-        bid_fills=[True, False],
-        ask_fills=[False, True],
     )
     second = compute_episode_metrics(
         rewards=[-1.0, 1.0],
         pnls=[-0.5, 0.0],
         inventories=[0.0, -3.0],
         quoted=[False, True],
-        actions=[0, 4],
-        bid_fills=[False, False],
-        ask_fills=[False, True],
     )
 
     aggregate = aggregate_episode_metrics([first, second])
@@ -83,7 +74,6 @@ def test_aggregate_episode_metrics() -> None:
     assert aggregate.total_reward.std == 1.5
     assert aggregate.max_abs_inventory.mean == 2.0
     assert aggregate.max_abs_inventory.std == 1.0
-    assert aggregate.mean_abs_inventory.mean == 1.0
     assert aggregate.final_inventory.mean == -1.0
     assert aggregate.final_inventory.std == 2.0
     assert aggregate.number_of_steps.mean == 2.0
@@ -92,11 +82,6 @@ def test_aggregate_episode_metrics() -> None:
     assert aggregate.quoted_steps.std == 0.5
     assert aggregate.quote_rate.mean == 0.75
     assert aggregate.quote_rate.std == 0.25
-    assert aggregate.action_0_no_quote.mean == 0.5
-    assert aggregate.action_2_medium.mean == 1.0
-    assert aggregate.action_4_skew_sell.mean == 0.5
-    assert aggregate.total_fills.mean == 1.5
-    assert aggregate.fill_rate.mean == 0.75
 
 
 def test_run_strategy_aggregates_multiple_seeded_episodes() -> None:
@@ -137,10 +122,9 @@ def test_print_comparison_reports_mean_plus_std(capsys) -> None:
     assert "total_pnl" in output
     assert "total_reward" in output
     assert "max_abs_inventory" in output
-    assert "mean_abs_inventory" in output
     assert "final_inventory" in output
+    assert "number_of_steps" in output
     assert "quote_rate" in output
-    assert "fill_rate" in output
     assert "fixed_spread" in output
     assert "+/-" in output
 

@@ -18,7 +18,9 @@ import torch
 from gymnasium import spaces
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.utils import polyak_update, safe_mean
 from torch import nn
+from torch.nn import functional as F
 
 from rl_mm.data.trades import prepare_trade_range
 from rl_mm.env import RealOrderbookEnv
@@ -57,7 +59,33 @@ class EpisodeMetrics:
     final_inventory: float
     quote_rate: float
     fill_rate: float
+    active_quote_seconds: float
+    active_quote_side_seconds: float
+    fill_event_count: float
+    filled_side_count: float
+    filled_base_quantity: float
+    submitted_base_quantity: float
+    fill_event_rate: float
+    quoted_side_fill_rate: float
+    volume_fill_ratio: float
     total_turnover: float
+    orders_created: float
+    orders_preserved: float
+    orders_replaced: float
+    orders_cancelled: float
+    average_order_age_seconds: float
+    average_queue_ahead_at_fill: float
+    spread_capture: float
+    side_adjusted_markout_1s: float
+    side_adjusted_markout_5s: float
+    side_adjusted_markout_30s: float
+    adverse_selection_contribution: float
+    inventory_mark_to_market_contribution: float
+    realized_plus_terminal_inventory_pnl: float
+    total_equity_pnl: float
+    pnl_reconciliation_error: float
+    pnl_per_filled_btc: float
+    markout_5s_per_filled_btc: float
     markout_1s: float
     markout_10s: float
     profitable_episode_percentage: float
@@ -82,7 +110,33 @@ class EvaluationSummary:
     final_inventory: MeanStd
     quote_rate: MeanStd
     fill_rate: MeanStd
+    active_quote_seconds: MeanStd
+    active_quote_side_seconds: MeanStd
+    fill_event_count: MeanStd
+    filled_side_count: MeanStd
+    filled_base_quantity: MeanStd
+    submitted_base_quantity: MeanStd
+    fill_event_rate: MeanStd
+    quoted_side_fill_rate: MeanStd
+    volume_fill_ratio: MeanStd
     total_turnover: MeanStd
+    orders_created: MeanStd
+    orders_preserved: MeanStd
+    orders_replaced: MeanStd
+    orders_cancelled: MeanStd
+    average_order_age_seconds: MeanStd
+    average_queue_ahead_at_fill: MeanStd
+    spread_capture: MeanStd
+    side_adjusted_markout_1s: MeanStd
+    side_adjusted_markout_5s: MeanStd
+    side_adjusted_markout_30s: MeanStd
+    adverse_selection_contribution: MeanStd
+    inventory_mark_to_market_contribution: MeanStd
+    realized_plus_terminal_inventory_pnl: MeanStd
+    total_equity_pnl: MeanStd
+    pnl_reconciliation_error: MeanStd
+    pnl_per_filled_btc: MeanStd
+    markout_5s_per_filled_btc: MeanStd
     markout_1s: MeanStd
     markout_10s: MeanStd
     profitable_episode_percentage: MeanStd
@@ -97,6 +151,20 @@ class BaselineParameters:
     queue_fraction: float
     volatility_filter: bool
     imbalance_filter: bool
+
+
+@dataclass(frozen=True)
+class FillDiagnosticConfiguration:
+    spread_bps: float
+    imbalance_strength: float
+    queue_fraction: float = 0.25
+
+    @property
+    def name(self) -> str:
+        return (
+            f"spread={self.spread_bps:g}_imbalance={self.imbalance_strength:.2f}_"
+            f"queue={self.queue_fraction:.2f}"
+        )
 
 
 @dataclass(frozen=True)
@@ -186,13 +254,196 @@ RESIDUAL_SCREENING_TIMESTEPS = 250_000
 RESIDUAL_FULL_TIMESTEPS = 700_000
 RESIDUAL_VARIANTS = ("conservative", "selective_narrow", "asymmetric")
 RESIDUAL_FINAL_MODEL = Path("models/real_residual_sac_zero_fee_best.zip")
+RESIDUAL_EARLY_STOP_VARIANT = "selective_narrow"
+RESIDUAL_VALIDATION_INTERVAL = 50_000
+RESIDUAL_EARLY_STOP_PATIENCE = 3
+RESIDUAL_MIN_SCORE_IMPROVEMENT = 0.01
+RESIDUAL_ACTION_L2_COEFFICIENT = 0.01
+RESIDUAL_BC_COEFFICIENT_START = 0.05
+RESIDUAL_BC_COEFFICIENT_END = 0.005
+RESIDUAL_EARLY_STOP_STATE = Path("models/search_tmp/residual_sac_early_stop_state.json")
+
+
+class AnchoredSAC(SAC):
+    """SAC with actor-only anchors toward baseline residual actions."""
+
+    def __init__(
+        self,
+        *args: object,
+        action_l2_coefficient: float = RESIDUAL_ACTION_L2_COEFFICIENT,
+        bc_coefficient_start: float = RESIDUAL_BC_COEFFICIENT_START,
+        bc_coefficient_end: float = RESIDUAL_BC_COEFFICIENT_END,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        if action_l2_coefficient < 0.0:
+            raise ValueError("action_l2_coefficient must be non-negative")
+        if bc_coefficient_start < 0.0 or bc_coefficient_end < 0.0:
+            raise ValueError("behaviour-cloning coefficients must be non-negative")
+        self.action_l2_coefficient = float(action_l2_coefficient)
+        self.bc_coefficient_start = float(bc_coefficient_start)
+        self.bc_coefficient_end = float(bc_coefficient_end)
+        self.anchor_total_timesteps = 1
+        self.anchor_observations: torch.Tensor | None = None
+        self.anchor_actions: torch.Tensor | None = None
+
+    def _excluded_save_params(self) -> list[str]:
+        return [
+            *super()._excluded_save_params(),
+            "anchor_observations",
+            "anchor_actions",
+        ]
+
+    def set_actor_anchors(
+        self,
+        observations: np.ndarray,
+        actions: np.ndarray,
+        *,
+        total_timesteps: int,
+    ) -> None:
+        if len(observations) != len(actions) or len(observations) == 0:
+            raise ValueError("Actor anchors require equally sized non-empty batches")
+        if total_timesteps < 1:
+            raise ValueError("total_timesteps must be positive")
+        self.anchor_observations = torch.as_tensor(observations, device=self.device)
+        self.anchor_actions = torch.as_tensor(actions, device=self.device)
+        self.anchor_total_timesteps = int(total_timesteps)
+
+    def anchor_coefficients(self) -> tuple[float, float]:
+        progress = min(max(self.num_timesteps / self.anchor_total_timesteps, 0.0), 1.0)
+        cloning = self.bc_coefficient_start + progress * (
+            self.bc_coefficient_end - self.bc_coefficient_start
+        )
+        return self.action_l2_coefficient, cloning
+
+    def train(self, gradient_steps: int, batch_size: int = 64) -> None:
+        self.policy.set_training_mode(True)
+        optimizers = [self.actor.optimizer, self.critic.optimizer]
+        if self.ent_coef_optimizer is not None:
+            optimizers.append(self.ent_coef_optimizer)
+        self._update_learning_rate(optimizers)
+
+        ent_coef_losses: list[float] = []
+        ent_coefs: list[float] = []
+        actor_losses: list[float] = []
+        critic_losses: list[float] = []
+        action_l2_losses: list[float] = []
+        cloning_losses: list[float] = []
+
+        for gradient_step in range(gradient_steps):
+            replay_data = self.replay_buffer.sample(
+                batch_size,
+                env=self._vec_normalize_env,
+            )
+            discounts = (
+                replay_data.discounts if replay_data.discounts is not None else self.gamma
+            )
+            if self.use_sde:
+                self.actor.reset_noise()
+
+            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            log_prob = log_prob.reshape(-1, 1)
+            ent_coef_loss = None
+            if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
+                ent_coef = torch.exp(self.log_ent_coef.detach())
+                assert isinstance(self.target_entropy, float)
+                ent_coef_loss = -(
+                    self.log_ent_coef * (log_prob + self.target_entropy).detach()
+                ).mean()
+                ent_coef_losses.append(float(ent_coef_loss.item()))
+            else:
+                ent_coef = self.ent_coef_tensor
+            ent_coefs.append(float(ent_coef.item()))
+
+            if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
+                self.ent_coef_optimizer.zero_grad()
+                ent_coef_loss.backward()
+                self.ent_coef_optimizer.step()
+
+            with torch.no_grad():
+                next_actions, next_log_prob = self.actor.action_log_prob(
+                    replay_data.next_observations
+                )
+                next_q_values = torch.cat(
+                    self.critic_target(replay_data.next_observations, next_actions), dim=1
+                )
+                next_q_values, _ = torch.min(next_q_values, dim=1, keepdim=True)
+                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
+                target_q_values = replay_data.rewards + (
+                    1 - replay_data.dones
+                ) * discounts * next_q_values
+
+            current_q_values = self.critic(replay_data.observations, replay_data.actions)
+            critic_loss = 0.5 * sum(
+                F.mse_loss(current_q, target_q_values) for current_q in current_q_values
+            )
+            critic_losses.append(float(critic_loss.item()))
+            self.critic.optimizer.zero_grad()
+            critic_loss.backward()
+            self.critic.optimizer.step()
+
+            q_values_pi = torch.cat(self.critic(replay_data.observations, actions_pi), dim=1)
+            min_qf_pi, _ = torch.min(q_values_pi, dim=1, keepdim=True)
+            actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
+            action_l2_coefficient, cloning_coefficient = self.anchor_coefficients()
+            neutral_action = torch.zeros_like(actions_pi)
+            action_l2_loss = torch.mean((actions_pi - neutral_action) ** 2)
+            actor_loss = actor_loss + action_l2_coefficient * action_l2_loss
+            action_l2_losses.append(float(action_l2_loss.item()))
+            cloning_loss = torch.zeros((), device=self.device)
+            if self.anchor_observations is not None and self.anchor_actions is not None:
+                anchor_indices = torch.randint(
+                    len(self.anchor_observations),
+                    (min(batch_size, len(self.anchor_observations)),),
+                    device=self.device,
+                )
+                predicted_anchor_actions = self.actor(
+                    self.anchor_observations[anchor_indices], deterministic=True
+                )
+                cloning_loss = F.mse_loss(
+                    predicted_anchor_actions,
+                    self.anchor_actions[anchor_indices],
+                )
+                actor_loss = actor_loss + cloning_coefficient * cloning_loss
+            cloning_losses.append(float(cloning_loss.item()))
+            actor_losses.append(float(actor_loss.item()))
+            self.actor.optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor.optimizer.step()
+
+            if gradient_step % self.target_update_interval == 0:
+                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
+                polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+
+        self._n_updates += gradient_steps
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/ent_coef", safe_mean(ent_coefs))
+        self.logger.record("train/actor_loss", safe_mean(actor_losses))
+        self.logger.record("train/critic_loss", safe_mean(critic_losses))
+        self.logger.record("train/action_l2_loss", safe_mean(action_l2_losses))
+        self.logger.record("train/cloning_loss", safe_mean(cloning_losses))
+        _, cloning_coefficient = self.anchor_coefficients()
+        self.logger.record("train/action_l2_coefficient", self.action_l2_coefficient)
+        self.logger.record("train/cloning_coefficient", cloning_coefficient)
+        if ent_coef_losses:
+            self.logger.record("train/ent_coef_loss", safe_mean(ent_coef_losses))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the complete real-data experiment.")
     parser.add_argument(
         "--mode",
-        choices=["prepare", "train", "evaluate", "all", "full", "optimize", "residual"],
+        choices=[
+            "prepare",
+            "train",
+            "evaluate",
+            "all",
+            "full",
+            "optimize",
+            "residual",
+            "residual-early-stop",
+            "diagnose-fills",
+        ],
         required=True,
     )
     parser.add_argument("--start-date", required=True)
@@ -207,6 +458,13 @@ def main() -> None:
     parser.add_argument("--screening-timesteps", type=int, default=RESIDUAL_SCREENING_TIMESTEPS)
     parser.add_argument("--full-timesteps", type=int, default=RESIDUAL_FULL_TIMESTEPS)
     parser.add_argument("--bc-samples", type=int, default=4_096)
+    parser.add_argument("--validation-interval", type=int, default=RESIDUAL_VALIDATION_INTERVAL)
+    parser.add_argument("--early-stop-patience", type=int, default=RESIDUAL_EARLY_STOP_PATIENCE)
+    parser.add_argument(
+        "--min-score-improvement",
+        type=float,
+        default=RESIDUAL_MIN_SCORE_IMPROVEMENT,
+    )
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument(
         "--orderbook-dir",
@@ -233,10 +491,19 @@ def main() -> None:
         if args.max_hours <= 0:
             raise ValueError("--max-hours must be positive")
         args.queue_fraction = SEARCH_QUEUE_FRACTION
-    if args.mode == "residual" and not np.isclose(args.maker_fee, 0.0):
+    if args.mode in {"residual", "residual-early-stop"} and not np.isclose(
+        args.maker_fee, 0.0
+    ):
         raise ValueError("The first residual SAC experiment requires --maker-fee 0")
-    if args.mode == "residual":
+    if args.mode in {"residual", "residual-early-stop", "diagnose-fills"}:
         args.queue_fraction = SEARCH_QUEUE_FRACTION
+    if args.mode == "residual-early-stop":
+        if args.validation_interval < 1:
+            raise ValueError("--validation-interval must be positive")
+        if args.early_stop_patience < 1:
+            raise ValueError("--early-stop-patience must be positive")
+        if args.min_score_improvement < 0.0:
+            raise ValueError("--min-score-improvement must be non-negative")
     model_path = resolve_model_path(
         args.model_path,
         maker_fee=args.maker_fee,
@@ -307,6 +574,31 @@ def main() -> None:
             full_timesteps=args.full_timesteps,
             bc_samples=args.bc_samples,
             force_train=args.force_train,
+        )
+        return
+
+    if args.mode == "residual-early-stop":
+        run_residual_early_stop_experiment(
+            orderbook_dir=args.orderbook_dir,
+            trades_dir=trades_symbol_dir,
+            split=split,
+            seeds=seeds,
+            maker_fee=args.maker_fee,
+            full_timesteps=args.full_timesteps,
+            validation_interval=args.validation_interval,
+            early_stop_patience=args.early_stop_patience,
+            min_score_improvement=args.min_score_improvement,
+            bc_samples=args.bc_samples,
+            force_train=args.force_train,
+        )
+        return
+
+    if args.mode == "diagnose-fills":
+        run_real_fill_diagnostics(
+            orderbook_dir=args.orderbook_dir,
+            trades_dir=trades_symbol_dir,
+            split=split,
+            maker_fee=args.maker_fee,
         )
         return
 
@@ -920,6 +1212,92 @@ def residual_model_path(
     return Path(f"models/search_tmp/residual_sac_{variant}_seed{seed}{suffix}.zip")
 
 
+@dataclass(frozen=True)
+class ResidualEarlyStopResult:
+    best_path: Path | None
+    best_timestep: int | None
+    stopped_early: bool
+    imitation: tuple[float, float] | None
+
+
+def residual_early_stop_paths(
+    seed: int,
+    *,
+    search_dir: Path = Path("models/search_tmp"),
+) -> tuple[Path, Path]:
+    prefix = f"residual_sac_{RESIDUAL_EARLY_STOP_VARIANT}_seed{seed}"
+    return search_dir / f"{prefix}_resume.zip", search_dir / f"{prefix}_best.zip"
+
+
+def initial_residual_early_stop_state(seeds: list[int]) -> dict[str, object]:
+    return {
+        "version": 1,
+        "status": "running",
+        "variant": RESIDUAL_EARLY_STOP_VARIANT,
+        "seeds": {
+            str(seed): {
+                "status": "pending",
+                "timesteps": 0,
+                "best_score": None,
+                "best_timestep": None,
+                "checks_without_improvement": 0,
+                "history": [],
+            }
+            for seed in seeds
+        },
+    }
+
+
+def load_residual_early_stop_state(path: Path, seeds: list[int]) -> dict[str, object]:
+    if not path.is_file():
+        return initial_residual_early_stop_state(seeds)
+    with path.open(encoding="utf-8") as handle:
+        state = json.load(handle)
+    if state.get("version") != 1 or state.get("variant") != RESIDUAL_EARLY_STOP_VARIANT:
+        raise ValueError("Unsupported residual early-stop state")
+    state.setdefault("seeds", {})
+    for seed in seeds:
+        state["seeds"].setdefault(
+            str(seed),
+            {
+                "status": "pending",
+                "timesteps": 0,
+                "best_score": None,
+                "best_timestep": None,
+                "checks_without_improvement": 0,
+                "history": [],
+            },
+        )
+    return state
+
+
+def save_residual_early_stop_state(path: Path, state: dict[str, object]) -> None:
+    save_search_state(path, state)
+
+
+def checkpoint_improves_score(
+    score: float,
+    best_score: float | None,
+    minimum_improvement: float,
+) -> bool:
+    if not np.isfinite(score):
+        return False
+    return best_score is None or score >= best_score + minimum_improvement
+
+
+def update_early_stop_progress(
+    *,
+    score: float,
+    best_score: float | None,
+    checks_without_improvement: int,
+    minimum_improvement: float,
+    patience: int,
+) -> tuple[bool, int, bool]:
+    improved = checkpoint_improves_score(score, best_score, minimum_improvement)
+    next_checks = 0 if improved else checks_without_improvement + 1
+    return improved, next_checks, next_checks >= patience
+
+
 def residual_selector(model: SAC) -> ActionSelector:
     def select(observation: np.ndarray, inventory: float, seed: int) -> np.ndarray:
         del inventory, seed
@@ -1012,6 +1390,219 @@ def pretrain_residual_actor(
             loss.backward()
             model.actor.optimizer.step()
     return before, imitation_error()
+
+
+def train_residual_sac_early_stop(
+    *,
+    orderbook_dir: Path,
+    trades_dir: Path,
+    train_dates: tuple[date, ...],
+    validation_windows: list[EvaluationWindow],
+    base_parameters: BaselineParameters,
+    baseline_summary: EvaluationSummary,
+    seed: int,
+    target_timesteps: int,
+    validation_interval: int,
+    patience: int,
+    minimum_score_improvement: float,
+    bc_samples: int,
+    state: dict[str, object],
+    state_path: Path,
+    search_dir: Path = Path("models/search_tmp"),
+) -> ResidualEarlyStopResult:
+    """Train one anchored SAC seed and retain only its best validation model."""
+    if not train_dates:
+        raise ValueError("Residual SAC training requires train dates")
+    if validation_interval < 1 or patience < 1 or minimum_score_improvement < 0.0:
+        raise ValueError("Invalid early-stopping configuration")
+
+    seed_state = state["seeds"][str(seed)]
+    resume_path, best_path = residual_early_stop_paths(seed, search_dir=search_dir)
+    completed_statuses = {"complete", "early_stopped"}
+    if seed_state.get("status") in completed_statuses:
+        recorded_best = Path(str(seed_state.get("best_checkpoint", best_path)))
+        if recorded_best.is_file():
+            return ResidualEarlyStopResult(
+                best_path=recorded_best,
+                best_timestep=int(seed_state["best_timestep"]),
+                stopped_early=seed_state.get("status") == "early_stopped",
+                imitation=None,
+            )
+
+    env = RealOrderbookEnv(
+        data_dir=orderbook_dir,
+        trades_dir=trades_dir,
+        start_date=train_dates[0].isoformat(),
+        end_date=train_dates[-1].isoformat(),
+        episode_steps=3_600,
+        seed=seed,
+        random_start=True,
+        maker_fee=0.0,
+        queue_fraction=base_parameters.queue_fraction,
+        quote_spread_bps=base_parameters.spread_bps,
+        residual_continuous=True,
+        residual_variant=RESIDUAL_EARLY_STOP_VARIANT,
+        base_spread_bps=base_parameters.spread_bps,
+        base_volatility_filter=base_parameters.volatility_filter,
+        base_imbalance_filter=base_parameters.imbalance_filter,
+    )
+    imitation = None
+    try:
+        examples, expert_actions, used_dates = collect_behavior_cloning_batch(
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            train_dates=train_dates,
+            base_parameters=base_parameters,
+            sample_count=bc_samples,
+            seed=seed,
+            residual_variant=RESIDUAL_EARLY_STOP_VARIANT,
+        )
+        if not set(used_dates).issubset(train_dates):
+            raise RuntimeError("Behaviour cloning accessed a non-train date")
+
+        if resume_path.is_file():
+            model = AnchoredSAC.load(resume_path, env=env, device="cpu")
+            completed_timesteps = max(
+                int(seed_state.get("timesteps", 0)),
+                int(model.num_timesteps),
+            )
+        else:
+            model = AnchoredSAC(
+                "MlpPolicy",
+                env,
+                seed=seed,
+                learning_rate=3e-4,
+                buffer_size=100_000,
+                learning_starts=1_000,
+                batch_size=256,
+                train_freq=4,
+                gradient_steps=1,
+                policy_kwargs={
+                    "features_extractor_class": TemporalCNNExtractor,
+                    "features_extractor_kwargs": {"features_dim": 32},
+                    "net_arch": [64, 64],
+                },
+                verbose=0,
+                device="cpu",
+            )
+            imitation = pretrain_residual_actor(model, examples, expert_actions)
+            print(
+                f"baseline_imitation_error variant={RESIDUAL_EARLY_STOP_VARIANT} "
+                f"seed={seed}: before={imitation[0]:.6f} after={imitation[1]:.6f}"
+            )
+            completed_timesteps = 0
+
+        model.set_actor_anchors(
+            examples,
+            expert_actions,
+            total_timesteps=target_timesteps,
+        )
+        print(
+            f"actor_anchoring seed={seed} "
+            f"action_l2_coefficient={model.action_l2_coefficient:.6f} "
+            f"cloning_coefficient_start={model.bc_coefficient_start:.6f} "
+            f"cloning_coefficient_end={model.bc_coefficient_end:.6f}"
+        )
+        best_score = seed_state.get("best_score")
+        best_score = float(best_score) if best_score is not None else None
+        checks_without_improvement = int(seed_state.get("checks_without_improvement", 0))
+        history = seed_state.setdefault("history", [])
+
+        while completed_timesteps < target_timesteps:
+            chunk = min(validation_interval, target_timesteps - completed_timesteps)
+            model.learn(total_timesteps=chunk, reset_num_timesteps=False)
+            completed_timesteps += chunk
+            atomic_save_model(model, resume_path)
+            summary = evaluate_actor(
+                residual_selector(model),
+                orderbook_dir=orderbook_dir,
+                trades_dir=trades_dir,
+                windows=validation_windows,
+                maker_fee=0.0,
+                queue_fraction=base_parameters.queue_fraction,
+                quote_spread_bps=base_parameters.spread_bps,
+                residual_continuous=True,
+                residual_variant=RESIDUAL_EARLY_STOP_VARIANT,
+                base_parameters=base_parameters,
+            )
+            components = validation_score_components(summary)
+            validation = residual_validation_result(
+                summary,
+                baseline_summary=baseline_summary,
+            )
+            improved, checks_without_improvement, stopped_early = update_early_stop_progress(
+                score=(
+                    components["score"]
+                    if bool(validation["valid_metrics"])
+                    else float("nan")
+                ),
+                best_score=best_score,
+                checks_without_improvement=checks_without_improvement,
+                minimum_improvement=minimum_score_improvement,
+                patience=patience,
+            )
+            if improved:
+                best_score = components["score"]
+                atomic_save_model(model, best_path)
+                seed_state["best_score"] = best_score
+                seed_state["best_timestep"] = completed_timesteps
+                seed_state["best_checkpoint"] = str(best_path)
+            else:
+                stopped_early = checks_without_improvement >= patience
+            action_l2_coefficient, cloning_coefficient = model.anchor_coefficients()
+            history.append(
+                {
+                    "timestep": completed_timesteps,
+                    "mean_validation_pnl": components["mean_validation_pnl"],
+                    "std_validation_pnl": components["std_validation_pnl"],
+                    "mean_max_drawdown": components["mean_max_drawdown"],
+                    "quote_rate": summary.quote_rate.mean,
+                    "fill_rate": summary.fill_rate.mean,
+                    "score": components["score"],
+                    "new_best": improved,
+                    "action_l2_coefficient": action_l2_coefficient,
+                    "cloning_coefficient": cloning_coefficient,
+                }
+            )
+            seed_state.update(
+                {
+                    "timesteps": completed_timesteps,
+                    "checks_without_improvement": checks_without_improvement,
+                    "status": "early_stopped" if stopped_early else "running",
+                    "resume_checkpoint": str(resume_path),
+                }
+            )
+            save_residual_early_stop_state(state_path, state)
+            print(
+                f"validation_checkpoint seed={seed} timestep={completed_timesteps} "
+                f"mean_pnl={components['mean_validation_pnl']:.6f} "
+                f"pnl_std={components['std_validation_pnl']:.6f} "
+                f"mean_max_drawdown={components['mean_max_drawdown']:.6f} "
+                f"quote_rate={summary.quote_rate.mean:.6f} "
+                f"fill_rate={summary.fill_rate.mean:.6f} score={components['score']:.6f} "
+                f"new_best={improved} "
+                f"action_l2_coefficient={action_l2_coefficient:.6f} "
+                f"cloning_coefficient={cloning_coefficient:.6f}"
+            )
+            if stopped_early:
+                break
+
+        if seed_state.get("status") != "early_stopped":
+            seed_state["status"] = "complete"
+            save_residual_early_stop_state(state_path, state)
+        recorded_best = Path(str(seed_state.get("best_checkpoint", best_path)))
+        return ResidualEarlyStopResult(
+            best_path=recorded_best if recorded_best.is_file() else None,
+            best_timestep=(
+                int(seed_state["best_timestep"])
+                if seed_state.get("best_timestep") is not None
+                else None
+            ),
+            stopped_early=seed_state.get("status") == "early_stopped",
+            imitation=imitation,
+        )
+    finally:
+        env.close()
 
 
 def train_residual_sac(
@@ -1404,6 +1995,201 @@ def run_residual_experiment(
             quote_spread_bps=base_parameters.spread_bps,
             residual_continuous=True,
             residual_variant=selected_variant,
+            base_parameters=base_parameters,
+        ),
+    }
+    print("final residual SAC test comparison:")
+    print_metrics_table(results)
+    for name, summary in results.items():
+        print(
+            f"  {name}: median_pnl={summary.median_total_pnl:.4f} "
+            f"total_pnl={summary.total_pnl.mean * len(test_windows):.4f}"
+        )
+
+
+def build_residual_validation_windows(
+    *,
+    orderbook_dir: Path,
+    split: DatasetSplit,
+) -> list[EvaluationWindow]:
+    return build_evaluation_windows(
+        orderbook_dir=orderbook_dir,
+        symbol="BTCUSDT",
+        dates=split.validation,
+        seeds=[42],
+        minimum_episodes=len(split.validation),
+    )
+
+
+def run_residual_early_stop_experiment(
+    *,
+    orderbook_dir: Path,
+    trades_dir: Path,
+    split: DatasetSplit,
+    seeds: list[int],
+    maker_fee: float,
+    full_timesteps: int,
+    validation_interval: int,
+    early_stop_patience: int,
+    min_score_improvement: float,
+    bc_samples: int,
+    force_train: bool,
+    state_path: Path = RESIDUAL_EARLY_STOP_STATE,
+) -> None:
+    """Run the fixed selective-narrow residual SAC experiment with early stopping."""
+    del force_train
+    if not np.isclose(maker_fee, 0.0):
+        raise ValueError("Residual SAC early stopping is currently defined for zero fees")
+    state = load_residual_early_stop_state(state_path, seeds)
+    if state.get("status") == "complete":
+        print(f"residual early-stop experiment already complete: {state_path}")
+        return
+
+    base_parameters = BaselineParameters(15.0, SEARCH_QUEUE_FRACTION, False, True)
+    validation_windows = build_residual_validation_windows(
+        orderbook_dir=orderbook_dir,
+        split=split,
+    )
+    inventory_actor = baseline_actor("inventory", base_parameters, False)
+    baseline_summary = evaluate_actor(
+        inventory_actor.selector,
+        orderbook_dir=orderbook_dir,
+        trades_dir=trades_dir,
+        windows=validation_windows,
+        maker_fee=0.0,
+        queue_fraction=base_parameters.queue_fraction,
+        quote_spread_bps=base_parameters.spread_bps,
+    )
+    baseline_components = validation_score_components(baseline_summary)
+    print(
+        "baseline_score_components: "
+        f"mean_pnl={baseline_components['mean_validation_pnl']:.6f} "
+        f"pnl_std={baseline_components['std_validation_pnl']:.6f} "
+        f"mean_max_drawdown={baseline_components['mean_max_drawdown']:.6f} "
+        f"score={baseline_components['score']:.6f}"
+    )
+
+    validation_summaries: dict[int, EvaluationSummary] = {}
+    best_paths: dict[int, Path] = {}
+    best_timesteps: dict[int, int] = {}
+    for seed in seeds:
+        result = train_residual_sac_early_stop(
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            train_dates=split.train,
+            validation_windows=validation_windows,
+            base_parameters=base_parameters,
+            baseline_summary=baseline_summary,
+            seed=seed,
+            target_timesteps=full_timesteps,
+            validation_interval=validation_interval,
+            patience=early_stop_patience,
+            minimum_score_improvement=min_score_improvement,
+            bc_samples=bc_samples,
+            state=state,
+            state_path=state_path,
+        )
+        if result.best_path is None or result.best_timestep is None:
+            print(f"seed={seed} has no valid validation checkpoint")
+            continue
+        summary = evaluate_residual_model(
+            result.best_path,
+            variant=RESIDUAL_EARLY_STOP_VARIANT,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=validation_windows,
+            base_parameters=base_parameters,
+        )
+        validation_summaries[seed] = summary
+        best_paths[seed] = result.best_path
+        best_timesteps[seed] = result.best_timestep
+        seed_state = state["seeds"][str(seed)]
+        seed_state["best_validation_score"] = validation_score_components(summary)["score"]
+        seed_state["best_validation_pnl"] = summary.total_pnl.mean
+        save_residual_early_stop_state(state_path, state)
+        print_validation_score(
+            f"{RESIDUAL_EARLY_STOP_VARIANT}_seed{seed}_best_t{result.best_timestep}",
+            summary,
+            baseline_summary,
+        )
+        print(
+            f"early_stop_result seed={seed} best_checkpoint={result.best_path} "
+            f"best_timestep={result.best_timestep} stopped_early={result.stopped_early}"
+        )
+
+    selected_seed = select_residual_seed(
+        validation_summaries,
+        baseline_summary=baseline_summary,
+    )
+    if selected_seed is None:
+        state["status"] = "complete"
+        state["selected_seed"] = None
+        save_residual_early_stop_state(state_path, state)
+        print("selected_residual_seed: none")
+        print("test_evaluation_triggered: false")
+        return
+
+    selected_path = best_paths[selected_seed]
+    atomic_copy_model(selected_path, RESIDUAL_FINAL_MODEL)
+    state["status"] = "complete"
+    state["selected_seed"] = selected_seed
+    state["selected_best_timestep"] = best_timesteps[selected_seed]
+    state["selected_checkpoint"] = str(selected_path)
+    state["final_model_path"] = str(RESIDUAL_FINAL_MODEL)
+    save_residual_early_stop_state(state_path, state)
+    print(f"selected_residual_seed: {selected_seed}")
+    print(f"selected_best_timestep: {best_timesteps[selected_seed]}")
+    print(f"best_residual_model: {RESIDUAL_FINAL_MODEL}")
+
+    test_windows = build_residual_test_windows(
+        orderbook_dir=orderbook_dir,
+        split=split,
+        promotion_complete=True,
+    )
+    previous_model, previous_candidate = previous_ppo_settings()
+    fixed_actor = baseline_actor("fixed", base_parameters, False)
+    residual_model = SAC.load(RESIDUAL_FINAL_MODEL, device="cpu")
+    results = {
+        "adaptive_fixed_spread": evaluate_actor(
+            fixed_actor.selector,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+            maker_fee=0.0,
+            queue_fraction=base_parameters.queue_fraction,
+            quote_spread_bps=base_parameters.spread_bps,
+        ),
+        "adaptive_inventory_skew": evaluate_actor(
+            inventory_actor.selector,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+            maker_fee=0.0,
+            queue_fraction=base_parameters.queue_fraction,
+            quote_spread_bps=base_parameters.spread_bps,
+        ),
+        "previous_best_ppo": evaluate_actor(
+            ppo_selector(previous_model),
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+            maker_fee=0.0,
+            mandatory_quoting=True,
+            queue_fraction=SEARCH_QUEUE_FRACTION,
+            inventory_penalty_multiplier=previous_candidate.inventory_penalty_multiplier,
+            size_multipliers=previous_candidate.size_multipliers,
+            quote_offset_scale=previous_candidate.quote_offset_scale,
+        ),
+        "residual_sac": evaluate_actor(
+            residual_selector(residual_model),
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+            maker_fee=0.0,
+            queue_fraction=base_parameters.queue_fraction,
+            quote_spread_bps=base_parameters.spread_bps,
+            residual_continuous=True,
+            residual_variant=RESIDUAL_EARLY_STOP_VARIANT,
             base_parameters=base_parameters,
         ),
     }
@@ -1891,6 +2677,7 @@ def evaluate_actor(
     residual_continuous: bool = False,
     residual_variant: str = "legacy",
     base_parameters: BaselineParameters | None = None,
+    imbalance_strength: float = 0.0,
 ) -> EvaluationSummary:
     episodes = [
         evaluate_window(
@@ -1908,6 +2695,7 @@ def evaluate_actor(
             residual_continuous=residual_continuous,
             residual_variant=residual_variant,
             base_parameters=base_parameters,
+            imbalance_strength=imbalance_strength,
         )
         for window in windows
     ]
@@ -1945,6 +2733,7 @@ def evaluate_window(
     residual_continuous: bool = False,
     residual_variant: str = "legacy",
     base_parameters: BaselineParameters | None = None,
+    imbalance_strength: float = 0.0,
 ) -> EpisodeMetrics:
     day = window.day.isoformat()
     env = RealOrderbookEnv(
@@ -1970,6 +2759,7 @@ def evaluate_window(
         base_imbalance_filter=(
             base_parameters.imbalance_filter if base_parameters else False
         ),
+        imbalance_strength=imbalance_strength,
     )
     observation, _ = env.reset(
         seed=window.seed,
@@ -2009,6 +2799,12 @@ def evaluate_window(
     )
     curve = np.asarray(equity_curve, dtype=float)
     maximum_drawdown = float(np.max(np.maximum.accumulate(curve) - curve))
+    execution = env.execution_diagnostics()
+    if not np.isclose(execution["pnl_reconciliation_error"], 0.0, atol=1e-8):
+        raise RuntimeError(
+            "Execution PnL decomposition does not reconcile: "
+            f"{execution['pnl_reconciliation_error']:.12f}"
+        )
     metrics = EpisodeMetrics(
         total_pnl=episode_pnl,
         gross_pnl_before_fees=episode_pnl + env.total_fees,
@@ -2020,8 +2816,67 @@ def evaluate_window(
         mean_abs_inventory=float(np.mean(inventories)) if inventories else 0.0,
         final_inventory=env.inventory,
         quote_rate=quoted_steps / steps if steps else 0.0,
+        # Backward-compatible metric: filled bid/ask sides divided by episode seconds.
         fill_rate=fills / steps if steps else 0.0,
+        active_quote_seconds=float(env.active_quote_seconds),
+        active_quote_side_seconds=float(env.active_quote_side_seconds),
+        fill_event_count=float(env.fill_event_count),
+        filled_side_count=float(env.filled_side_count),
+        filled_base_quantity=env.filled_base_quantity,
+        submitted_base_quantity=env.submitted_base_quantity,
+        fill_event_rate=(
+            env.fill_event_count / env.active_quote_seconds
+            if env.active_quote_seconds
+            else 0.0
+        ),
+        quoted_side_fill_rate=(
+            env.filled_side_count / env.active_quote_side_seconds
+            if env.active_quote_side_seconds
+            else 0.0
+        ),
+        volume_fill_ratio=(
+            env.filled_base_quantity / env.submitted_base_quantity
+            if env.submitted_base_quantity > 0.0
+            else 0.0
+        ),
         total_turnover=env.total_turnover,
+        orders_created=float(env.orders_created),
+        orders_preserved=float(env.orders_preserved),
+        orders_replaced=float(env.orders_replaced),
+        orders_cancelled=float(env.orders_cancelled),
+        average_order_age_seconds=(
+            env._order_age_seconds_total / env.active_quote_side_seconds
+            if env.active_quote_side_seconds
+            else 0.0
+        ),
+        average_queue_ahead_at_fill=(
+            env._queue_ahead_at_fill_total / env.filled_side_count
+            if env.filled_side_count
+            else 0.0
+        ),
+        spread_capture=execution["spread_capture"],
+        side_adjusted_markout_1s=execution["side_adjusted_markout_1s"],
+        side_adjusted_markout_5s=execution["side_adjusted_markout_5s"],
+        side_adjusted_markout_30s=execution["side_adjusted_markout_30s"],
+        adverse_selection_contribution=execution["adverse_selection_contribution"],
+        inventory_mark_to_market_contribution=execution[
+            "inventory_mark_to_market_contribution"
+        ],
+        realized_plus_terminal_inventory_pnl=execution[
+            "realized_plus_terminal_inventory_pnl"
+        ],
+        total_equity_pnl=execution["total_equity_pnl"],
+        pnl_reconciliation_error=execution["pnl_reconciliation_error"],
+        pnl_per_filled_btc=(
+            episode_pnl / env.filled_base_quantity
+            if env.filled_base_quantity > 0.0
+            else 0.0
+        ),
+        markout_5s_per_filled_btc=(
+            execution["side_adjusted_markout_5s"] / env.filled_base_quantity
+            if env.filled_base_quantity > 0.0
+            else 0.0
+        ),
         markout_1s=float(np.mean(markout_1s)) if markout_1s else 0.0,
         markout_10s=float(np.mean(markout_10s)) if markout_10s else 0.0,
         profitable_episode_percentage=100.0 if episode_pnl > 0.0 else 0.0,
@@ -2047,6 +2902,296 @@ def print_metrics_table(results: dict[str, EvaluationSummary]) -> None:
     print("  ".join("-" * widths[header] for header in headers))
     for row in rows:
         print("  ".join(row[header].ljust(widths[header]) for header in headers))
+
+
+def assert_neutral_residual_equivalence(
+    *,
+    orderbook_dir: Path,
+    trades_dir: Path,
+    windows: list[EvaluationWindow],
+    parameters: BaselineParameters,
+    maker_fee: float,
+    imbalance_strength: float = 0.0,
+) -> None:
+    """Fail on the first live-replay difference between baseline and neutral residual."""
+    actor = baseline_actor("inventory", parameters, False)
+    neutral_action = RealOrderbookEnv.neutral_residual_action("selective_narrow")
+    compared_fields = (
+        "bid_quote",
+        "ask_quote",
+        "bid_order_size_btc",
+        "ask_order_size_btc",
+        "bid_filled",
+        "ask_filled",
+        "bid_fill_size",
+        "ask_fill_size",
+        "inventory",
+        "total_turnover",
+        "total_fees",
+        "equity",
+        "reward",
+    )
+    for window in windows:
+        day = window.day.isoformat()
+        common = {
+            "data_dir": orderbook_dir,
+            "trades_dir": trades_dir,
+            "start_date": day,
+            "end_date": day,
+            "episode_steps": window.steps,
+            "seed": window.seed,
+            "maker_fee": maker_fee,
+            "queue_fraction": parameters.queue_fraction,
+            "quote_spread_bps": parameters.spread_bps,
+            "base_spread_bps": parameters.spread_bps,
+            "base_volatility_filter": parameters.volatility_filter,
+            "base_imbalance_filter": parameters.imbalance_filter,
+            "imbalance_strength": imbalance_strength,
+        }
+        baseline_env = RealOrderbookEnv(**common)
+        residual_env = RealOrderbookEnv(
+            **common,
+            residual_continuous=True,
+            residual_variant="selective_narrow",
+        )
+        try:
+            baseline_observation, _ = baseline_env.reset(
+                seed=window.seed,
+                options={"date": day, "start_index": window.start_index},
+            )
+            residual_env.reset(
+                seed=window.seed,
+                options={"date": day, "start_index": window.start_index},
+            )
+            truncated = False
+            while not truncated:
+                action = actor.selector(
+                    baseline_observation,
+                    baseline_env.inventory,
+                    window.seed,
+                )
+                baseline_observation, _, _, truncated, baseline_info = baseline_env.step(
+                    action
+                )
+                _, _, _, residual_truncated, residual_info = residual_env.step(neutral_action)
+                if residual_truncated != truncated:
+                    raise AssertionError(
+                        f"neutral residual termination mismatch on {window.identifier}"
+                    )
+                for field_name in compared_fields:
+                    baseline_value = baseline_info[field_name]
+                    residual_value = residual_info[field_name]
+                    if isinstance(baseline_value, (float, np.floating)) or isinstance(
+                        residual_value, (float, np.floating)
+                    ):
+                        matches = (
+                            baseline_value is None
+                            and residual_value is None
+                            or baseline_value is not None
+                            and residual_value is not None
+                            and np.isclose(baseline_value, residual_value, atol=1e-12)
+                        )
+                    else:
+                        matches = baseline_value == residual_value
+                    if not matches:
+                        raise AssertionError(
+                            "neutral residual mismatch "
+                            f"window={window.identifier} timestep={baseline_env.step_count} "
+                            f"field={field_name} baseline={baseline_value!r} "
+                            f"residual={residual_value!r}"
+                        )
+        finally:
+            baseline_env.close()
+            residual_env.close()
+
+
+def run_real_fill_diagnostics(
+    *,
+    orderbook_dir: Path,
+    trades_dir: Path,
+    split: DatasetSplit,
+    maker_fee: float,
+) -> None:
+    """Print a validation-only audit of fills, persistence, spread, and imbalance."""
+    windows = build_evaluation_windows(
+        orderbook_dir=orderbook_dir,
+        symbol="BTCUSDT",
+        dates=split.validation,
+        seeds=[42],
+        minimum_episodes=len(split.validation),
+    )
+    neutral_parameters = BaselineParameters(15.0, 0.25, False, False)
+    assert_neutral_residual_equivalence(
+        orderbook_dir=orderbook_dir,
+        trades_dir=trades_dir,
+        windows=windows,
+        parameters=neutral_parameters,
+        maker_fee=maker_fee,
+    )
+    print("neutral_residual_equivalence: passed")
+    print(
+        "legacy_fill_rate: numerator=filled_side_count "
+        "(bid_filled + ask_filled), denominator=episode_steps"
+    )
+
+    configurations = [
+        FillDiagnosticConfiguration(spread, strength)
+        for spread in (15.0, 10.0, 7.5, 5.0)
+        for strength in (0.0, 0.25, 0.5)
+    ]
+    primary_results: dict[FillDiagnosticConfiguration, EvaluationSummary] = {}
+    for configuration in configurations:
+        parameters = BaselineParameters(
+            configuration.spread_bps,
+            configuration.queue_fraction,
+            False,
+            False,
+        )
+        actor = baseline_actor("inventory", parameters, False)
+        primary_results[configuration] = evaluate_actor(
+            actor.selector,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=windows,
+            maker_fee=maker_fee,
+            queue_fraction=configuration.queue_fraction,
+            quote_spread_bps=configuration.spread_bps,
+            base_parameters=parameters,
+            imbalance_strength=configuration.imbalance_strength,
+        )
+    print_fill_diagnostic_results("primary validation diagnostics", primary_results, len(windows))
+    print_fill_rate_impact(primary_results)
+
+    ranked = sorted(
+        configurations,
+        key=lambda configuration: validation_score_components(
+            primary_results[configuration]
+        )["score"],
+        reverse=True,
+    )[:3]
+    sensitivity_results: dict[FillDiagnosticConfiguration, EvaluationSummary] = {}
+    for configuration in ranked:
+        for queue_fraction in (0.10, 0.25, 0.50):
+            sensitivity = FillDiagnosticConfiguration(
+                configuration.spread_bps,
+                configuration.imbalance_strength,
+                queue_fraction,
+            )
+            parameters = BaselineParameters(
+                sensitivity.spread_bps,
+                sensitivity.queue_fraction,
+                False,
+                False,
+            )
+            actor = baseline_actor("inventory", parameters, False)
+            sensitivity_results[sensitivity] = evaluate_actor(
+                actor.selector,
+                orderbook_dir=orderbook_dir,
+                trades_dir=trades_dir,
+                windows=windows,
+                maker_fee=maker_fee,
+                queue_fraction=sensitivity.queue_fraction,
+                quote_spread_bps=sensitivity.spread_bps,
+                base_parameters=parameters,
+                imbalance_strength=sensitivity.imbalance_strength,
+            )
+    print("queue sensitivity is robustness-only; configurations remain ranked at queue=0.25")
+    print_fill_diagnostic_results("queue sensitivity", sensitivity_results, len(windows))
+
+
+def print_fill_diagnostic_results(
+    title: str,
+    results: dict[FillDiagnosticConfiguration, EvaluationSummary],
+    episode_count: int,
+) -> None:
+    print(title + ":")
+    print(
+        "configuration  score  mean_pnl  pnl_std  median_pnl  total_pnl  "
+        "drawdown  quote_rate  legacy_fill_rate  event_fill_rate  side_fill_rate  "
+        "volume_fill_ratio"
+    )
+    for configuration, summary in results.items():
+        score = validation_score_components(summary)["score"]
+        print(
+            f"{configuration.name}  {score:.6f}  {summary.total_pnl.mean:.6f}  "
+            f"{summary.total_pnl.std:.6f}  {summary.median_total_pnl:.6f}  "
+            f"{summary.total_pnl.mean * episode_count:.6f}  "
+            f"{summary.maximum_drawdown.mean:.6f}  {summary.quote_rate.mean:.6f}  "
+            f"{summary.fill_rate.mean:.6f}  {summary.fill_event_rate.mean:.6f}  "
+            f"{summary.quoted_side_fill_rate.mean:.6f}  {summary.volume_fill_ratio.mean:.6f}"
+        )
+        print(
+            "  fills: "
+            f"active_quote_seconds={summary.active_quote_seconds.mean:.2f}, "
+            f"active_quote_side_seconds={summary.active_quote_side_seconds.mean:.2f}, "
+            f"fill_event_count={summary.fill_event_count.mean:.2f}, "
+            f"filled_side_count={summary.filled_side_count.mean:.2f}, "
+            f"filled_base_quantity={summary.filled_base_quantity.mean:.8f}, "
+            f"submitted_base_quantity={summary.submitted_base_quantity.mean:.8f}; "
+            "orders: "
+            f"created={summary.orders_created.mean:.2f}, "
+            f"preserved={summary.orders_preserved.mean:.2f}, "
+            f"replaced={summary.orders_replaced.mean:.2f}, "
+            f"cancelled={summary.orders_cancelled.mean:.2f}, "
+            f"avg_age={summary.average_order_age_seconds.mean:.4f}, "
+            f"avg_queue_at_fill={summary.average_queue_ahead_at_fill.mean:.8f}"
+        )
+        print(
+            "  execution: "
+            f"spread_capture={summary.spread_capture.mean:.6f}, "
+            f"markout_1s={summary.side_adjusted_markout_1s.mean:.6f}, "
+            f"markout_5s={summary.side_adjusted_markout_5s.mean:.6f}, "
+            f"markout_30s={summary.side_adjusted_markout_30s.mean:.6f}, "
+            f"adverse_selection={summary.adverse_selection_contribution.mean:.6f}, "
+            f"inventory_contribution={summary.inventory_mark_to_market_contribution.mean:.6f}, "
+            f"fees={summary.total_fees.mean:.6f}, "
+            "realized_plus_terminal_inventory="
+            f"{summary.realized_plus_terminal_inventory_pnl.mean:.6f}, "
+            f"equity_pnl={summary.total_equity_pnl.mean:.6f}, "
+            f"reconciliation_error={summary.pnl_reconciliation_error.mean:.12f}"
+        )
+        print(
+            "  impact: "
+            f"profitable_episodes={summary.profitable_episode_percentage.mean:.2f}%, "
+            f"turnover={summary.total_turnover.mean:.6f}, "
+            f"max_abs_inventory={summary.max_abs_inventory.mean:.8f}, "
+            f"mean_abs_inventory={summary.mean_abs_inventory.mean:.8f}, "
+            f"pnl_per_filled_btc={summary.pnl_per_filled_btc.mean:.6f}, "
+            f"markout_5s_per_filled_btc={summary.markout_5s_per_filled_btc.mean:.6f}"
+        )
+
+
+def print_fill_rate_impact(
+    results: dict[FillDiagnosticConfiguration, EvaluationSummary],
+) -> None:
+    if len(results) < 2:
+        return
+    fill_rates = np.asarray(
+        [summary.fill_event_rate.mean for summary in results.values()], dtype=float
+    )
+    labels = {
+        "pnl_per_filled_btc": np.asarray(
+            [summary.pnl_per_filled_btc.mean for summary in results.values()], dtype=float
+        ),
+        "markout_5s_per_filled_btc": np.asarray(
+            [summary.markout_5s_per_filled_btc.mean for summary in results.values()], dtype=float
+        ),
+        "drawdown": np.asarray(
+            [summary.maximum_drawdown.mean for summary in results.values()], dtype=float
+        ),
+    }
+    print("fill-rate relationship across primary validation configurations:")
+    for label, values in labels.items():
+        if np.std(fill_rates) <= 1e-12 or np.std(values) <= 1e-12:
+            direction = "no measurable variation"
+        else:
+            correlation = float(np.corrcoef(fill_rates, values)[0, 1])
+            if label == "drawdown":
+                direction = "worsened" if correlation > 0.0 else "improved"
+            else:
+                direction = "improved" if correlation > 0.0 else "worsened"
+            direction += f" (correlation={correlation:.4f})"
+        print(f"  higher fill_event_rate vs {label}: {direction}")
 
 
 def print_profitability(results: dict[str, EvaluationSummary]) -> None:

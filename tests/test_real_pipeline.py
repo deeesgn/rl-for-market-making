@@ -16,23 +16,32 @@ from scripts.run_real_experiment import (
     DatasetSplit,
     EvaluationSummary,
     MeanStd,
+    ResidualEarlyStopResult,
+    assert_neutral_residual_equivalence,
     atomic_copy_model,
     baseline_selector,
     build_evaluation_windows,
     build_residual_test_windows,
+    build_residual_validation_windows,
+    checkpoint_improves_score,
     chronological_split,
     cleanup_rejected_models,
     collect_behavior_cloning_batch,
     evaluate_actor,
+    initial_residual_early_stop_state,
     initial_search_state,
     load_models,
+    load_residual_early_stop_state,
     load_search_state,
     model_path_for_seed,
     ppo_selector,
     promote_candidates,
+    residual_early_stop_paths,
     residual_validation_result,
     resolve_model_path,
+    run_residual_early_stop_experiment,
     run_search_final_test,
+    save_residual_early_stop_state,
     save_search_state,
     search_model_path,
     search_result_score,
@@ -42,7 +51,9 @@ from scripts.run_real_experiment import (
     select_residual_variant,
     train_ppo_models,
     train_residual_sac,
+    train_residual_sac_early_stop,
     train_search_candidate,
+    update_early_stop_progress,
     validation_score_components,
 )
 
@@ -277,6 +288,103 @@ def test_queue_excess_produces_partial_fill(tmp_path: Path) -> None:
 
     assert info["bid_filled"] is True
     assert np.isclose(info["bid_fill_size"], 0.0004)
+
+
+def test_resting_orders_preserve_queue_and_partial_remaining_quantity(tmp_path: Path) -> None:
+    orderbook_dir, trades_dir = write_market_day(
+        tmp_path,
+        sell_at_step=2,
+        trade_volume=0.0054,
+        visible_size=0.01,
+    )
+    env = make_trade_env(orderbook_dir, trades_dir, queue_fraction=0.5)
+    env.reset()
+
+    _, _, _, _, first_info = env.step([1, 1])
+    _, _, _, _, second_info = env.step([1, 1])
+
+    assert first_info["orders_created"] == 2
+    assert second_info["orders_preserved"] >= 2
+    assert np.isclose(second_info["bid_queue_ahead"], 0.005)
+    assert np.isclose(second_info["bid_fill_size"], 0.0004)
+    assert np.isclose(env._orders["bid"].remaining_quantity, 0.0006)
+
+
+def test_larger_same_price_order_replaces_without_queue_priority(tmp_path: Path) -> None:
+    orderbook_dir, trades_dir = write_market_day(tmp_path, visible_size=0.01)
+    env = make_trade_env(orderbook_dir, trades_dir, queue_fraction=0.5)
+    env.reset()
+
+    env.step([1, 0])
+    _, _, _, _, info = env.step([1, 2])
+
+    assert info["orders_replaced"] >= 2
+    assert np.isclose(info["bid_queue_ahead"], 0.005)
+
+
+def test_order_cancellation_and_fill_diagnostics_reconcile(tmp_path: Path) -> None:
+    orderbook_dir, trades_dir = write_market_day(tmp_path, sell_at_step=1)
+    env = make_trade_env(orderbook_dir, trades_dir, maker_fee=0.001)
+    env.reset()
+
+    _, _, _, _, fill_info = env.step([1, 1])
+    _, _, _, _, cancel_info = env.step([0, 1])
+    diagnostics = env.execution_diagnostics()
+
+    assert fill_info["active_quote_seconds"] == 1
+    assert fill_info["filled_side_count"] == 1
+    assert fill_info["filled_base_quantity"] == 0.001
+    assert fill_info["submitted_base_quantity"] == 0.002
+    assert np.isclose(fill_info["fill_event_rate"], 1.0)
+    assert np.isclose(fill_info["quoted_side_fill_rate"], 0.5)
+    assert cancel_info["orders_cancelled"] >= 1
+    assert np.isclose(diagnostics["total_equity_pnl"], env.equity - env.initial_cash)
+    assert abs(diagnostics["pnl_reconciliation_error"]) <= 1e-8
+
+
+def test_neutral_residual_matches_inventory_baseline_on_validation_window(tmp_path: Path) -> None:
+    orderbook_dir, trades_dir, dates = write_market_range(tmp_path, days=7)
+    split = chronological_split(dates)
+    windows = build_residual_validation_windows(orderbook_dir=orderbook_dir, split=split)
+
+    assert_neutral_residual_equivalence(
+        orderbook_dir=orderbook_dir,
+        trades_dir=trades_dir,
+        windows=windows,
+        parameters=BaselineParameters(15.0, 0.25, False, False),
+        maker_fee=0.0,
+    )
+
+
+def test_continuous_imbalance_moves_only_toward_passive_side_limits(tmp_path: Path) -> None:
+    orderbook_dir, trades_dir = write_market_day(tmp_path)
+    orderbook_path = orderbook_dir / "BTCUSDT_2025-01-01_orderbook_top10_1s.parquet"
+    orderbook = pd.read_parquet(orderbook_path)
+    orderbook["orderbook_imbalance"] = 0.9
+    orderbook.to_parquet(orderbook_path, index=False)
+    neutral = make_trade_env(
+        orderbook_dir,
+        trades_dir,
+        quote_spread_bps=200.0,
+        imbalance_strength=0.0,
+    )
+    adjusted = make_trade_env(
+        orderbook_dir,
+        trades_dir,
+        quote_spread_bps=200.0,
+        imbalance_strength=0.5,
+    )
+    neutral.reset()
+    adjusted.reset()
+
+    neutral_bid, neutral_ask = neutral._quote_prices(2, neutral.current_index)
+    adjusted_bid, adjusted_ask = adjusted._quote_prices(2, adjusted.current_index)
+
+    assert adjusted_bid is not None and neutral_bid is not None
+    assert adjusted_ask is not None and neutral_ask is not None
+    assert adjusted_bid >= neutral_bid
+    assert adjusted_ask >= neutral_ask
+    assert adjusted_bid < adjusted_ask
 
 
 def test_chronological_split_never_shuffles() -> None:
@@ -576,6 +684,184 @@ def test_residual_final_model_is_saved_atomically(tmp_path: Path) -> None:
     assert not destination.with_name("real_residual_sac_zero_fee_best.tmp.zip").exists()
 
 
+def test_early_stop_uses_best_checkpoint_instead_of_resume_checkpoint(
+    tmp_path: Path,
+) -> None:
+    state = initial_residual_early_stop_state([42])
+    resume_path, best_path = residual_early_stop_paths(42, search_dir=tmp_path)
+    resume_path.write_bytes(b"final training state")
+    best_path.write_bytes(b"best validation state")
+    seed_state = state["seeds"]["42"]
+    seed_state.update(
+        {
+            "status": "early_stopped",
+            "best_checkpoint": str(best_path),
+            "best_timestep": 50_000,
+        }
+    )
+
+    result = train_residual_sac_early_stop(
+        orderbook_dir=tmp_path / "unused-orderbook",
+        trades_dir=tmp_path / "unused-trades",
+        train_dates=(date(2025, 1, 1),),
+        validation_windows=[],
+        base_parameters=BaselineParameters(15.0, 0.25, False, True),
+        baseline_summary=make_evaluation_summary(pnl=0.1),
+        seed=42,
+        target_timesteps=700_000,
+        validation_interval=50_000,
+        patience=3,
+        minimum_score_improvement=0.01,
+        bc_samples=8,
+        state=state,
+        state_path=tmp_path / "state.json",
+        search_dir=tmp_path,
+    )
+
+    assert result.best_path == best_path
+    assert result.best_path.read_bytes() == b"best validation state"
+    assert result.best_timestep == 50_000
+
+
+def test_early_stop_activates_after_patience_is_exhausted() -> None:
+    best_score = 1.0
+    checks_without_improvement = 0
+    for _ in range(3):
+        improved, checks_without_improvement, stopped = update_early_stop_progress(
+            score=1.005,
+            best_score=best_score,
+            checks_without_improvement=checks_without_improvement,
+            minimum_improvement=0.01,
+            patience=3,
+        )
+        assert improved is False
+    assert checks_without_improvement == 3
+    assert stopped is True
+
+
+def test_early_stop_respects_minimum_score_improvement() -> None:
+    assert checkpoint_improves_score(1.01, 1.0, 0.01) is True
+    assert checkpoint_improves_score(1.009, 1.0, 0.01) is False
+    assert checkpoint_improves_score(float("nan"), 1.0, 0.01) is False
+
+
+def test_residual_validation_windows_are_identical(tmp_path: Path) -> None:
+    orderbook_dir, _, dates = write_market_range(tmp_path, days=7)
+    split = chronological_split(dates)
+
+    first = build_residual_validation_windows(orderbook_dir=orderbook_dir, split=split)
+    second = build_residual_validation_windows(orderbook_dir=orderbook_dir, split=split)
+
+    assert [window.identifier for window in first] == [window.identifier for window in second]
+
+
+def test_actor_anchoring_does_not_change_environment_reward(tmp_path: Path) -> None:
+    orderbook_dir, trades_dir = write_market_day(tmp_path, sell_at_step=1)
+    first = make_trade_env(orderbook_dir, trades_dir, residual_continuous=True)
+    second = make_trade_env(orderbook_dir, trades_dir, residual_continuous=True)
+    action = RealOrderbookEnv.neutral_residual_action("selective_narrow")
+
+    first.reset()
+    _, first_reward, _, _, first_info = first.step(action)
+    second.reset()
+    _, second_reward, _, _, second_info = second.step(action)
+
+    assert first_reward == second_reward
+    assert first_info["raw_pnl_step"] == second_info["raw_pnl_step"]
+    assert first_info["reward"] == first_reward
+    assert second_info["reward"] == second_reward
+
+
+def test_residual_early_stop_state_resumes_completed_best_checkpoint(tmp_path: Path) -> None:
+    state_path = tmp_path / "residual_sac_early_stop_state.json"
+    state = initial_residual_early_stop_state([42, 100, 200])
+    _, best_path = residual_early_stop_paths(42, search_dir=tmp_path)
+    best_path.write_bytes(b"best checkpoint")
+    state["seeds"]["42"].update(
+        {
+            "status": "complete",
+            "best_checkpoint": str(best_path),
+            "best_timestep": 100_000,
+            "best_score": 0.2,
+        }
+    )
+    save_residual_early_stop_state(state_path, state)
+
+    loaded = load_residual_early_stop_state(state_path, [42, 100, 200])
+    result = train_residual_sac_early_stop(
+        orderbook_dir=tmp_path / "unused-orderbook",
+        trades_dir=tmp_path / "unused-trades",
+        train_dates=(date(2025, 1, 1),),
+        validation_windows=[],
+        base_parameters=BaselineParameters(15.0, 0.25, False, True),
+        baseline_summary=make_evaluation_summary(pnl=0.1),
+        seed=42,
+        target_timesteps=700_000,
+        validation_interval=50_000,
+        patience=3,
+        minimum_score_improvement=0.01,
+        bc_samples=8,
+        state=loaded,
+        state_path=state_path,
+        search_dir=tmp_path,
+    )
+
+    assert result.best_path == best_path
+    assert result.best_timestep == 100_000
+    assert loaded["seeds"]["100"]["status"] == "pending"
+
+
+def test_early_stop_runner_does_not_access_test_before_seed_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    best_path = tmp_path / "best.zip"
+    best_path.write_bytes(b"best")
+    baseline = make_evaluation_summary(pnl=0.1, pnl_std=0.1)
+    rejected = make_evaluation_summary(pnl=-0.1, pnl_std=0.1)
+
+    monkeypatch.setattr(
+        "scripts.run_real_experiment.build_residual_validation_windows",
+        lambda **_: [],
+    )
+    monkeypatch.setattr(
+        "scripts.run_real_experiment.evaluate_actor",
+        lambda *_args, **_kwargs: baseline,
+    )
+    monkeypatch.setattr(
+        "scripts.run_real_experiment.train_residual_sac_early_stop",
+        lambda **_: ResidualEarlyStopResult(best_path, 50_000, True, None),
+    )
+    monkeypatch.setattr(
+        "scripts.run_real_experiment.evaluate_residual_model",
+        lambda *_args, **_kwargs: rejected,
+    )
+    monkeypatch.setattr(
+        "scripts.run_real_experiment.build_residual_test_windows",
+        lambda **_: pytest.fail("test windows must not be built before promotion"),
+    )
+    split = DatasetSplit(
+        train=(date(2025, 1, 1),),
+        validation=(date(2025, 1, 2),),
+        test=(date(2025, 1, 3),),
+    )
+
+    run_residual_early_stop_experiment(
+        orderbook_dir=tmp_path / "unused-orderbook",
+        trades_dir=tmp_path / "unused-trades",
+        split=split,
+        seeds=[42],
+        maker_fee=0.0,
+        full_timesteps=700_000,
+        validation_interval=50_000,
+        early_stop_patience=3,
+        min_score_improvement=0.01,
+        bc_samples=8,
+        force_train=False,
+        state_path=tmp_path / "residual_sac_early_stop_state.json",
+    )
+
+
 def test_completed_model_is_not_overwritten(tmp_path: Path) -> None:
     base = tmp_path / "models" / "real_ppo.zip"
     completed = model_path_for_seed(base, 42)
@@ -717,7 +1003,33 @@ def make_evaluation_summary(
         final_inventory=zero,
         quote_rate=MeanStd(quote_rate, 0.0),
         fill_rate=MeanStd(fill_rate, 0.0),
+        active_quote_seconds=zero,
+        active_quote_side_seconds=zero,
+        fill_event_count=zero,
+        filled_side_count=zero,
+        filled_base_quantity=zero,
+        submitted_base_quantity=zero,
+        fill_event_rate=zero,
+        quoted_side_fill_rate=zero,
+        volume_fill_ratio=zero,
         total_turnover=zero,
+        orders_created=zero,
+        orders_preserved=zero,
+        orders_replaced=zero,
+        orders_cancelled=zero,
+        average_order_age_seconds=zero,
+        average_queue_ahead_at_fill=zero,
+        spread_capture=zero,
+        side_adjusted_markout_1s=zero,
+        side_adjusted_markout_5s=zero,
+        side_adjusted_markout_30s=zero,
+        adverse_selection_contribution=zero,
+        inventory_mark_to_market_contribution=zero,
+        realized_plus_terminal_inventory_pnl=MeanStd(pnl, pnl_std),
+        total_equity_pnl=MeanStd(pnl, pnl_std),
+        pnl_reconciliation_error=zero,
+        pnl_per_filled_btc=zero,
+        markout_5s_per_filled_btc=zero,
         markout_1s=zero,
         markout_10s=zero,
         profitable_episode_percentage=MeanStd(100.0 if pnl > 0 else 0.0, 0.0),

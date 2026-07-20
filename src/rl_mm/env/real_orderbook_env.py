@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,18 @@ import pandas as pd
 from gymnasium import spaces
 
 from rl_mm.strategies import InventorySkewStrategy
+
+
+@dataclass
+class RestingOrder:
+    """A passive quote whose queue position survives unchanged intent."""
+
+    side: str
+    price: float
+    remaining_quantity: float
+    requested_quantity: float
+    queue_ahead: float
+    creation_step: int
 
 
 class RealOrderbookEnv(gym.Env):
@@ -72,6 +85,7 @@ class RealOrderbookEnv(gym.Env):
         base_spread_bps: float = 5.0,
         base_volatility_filter: bool = False,
         base_imbalance_filter: bool = False,
+        imbalance_strength: float = 0.0,
     ) -> None:
         super().__init__()
         if max_inventory_btc <= 0:
@@ -96,6 +110,8 @@ class RealOrderbookEnv(gym.Env):
             raise ValueError("sequence_length must be positive")
         if residual_variant not in self.RESIDUAL_VARIANTS:
             raise ValueError(f"Unknown residual variant: {residual_variant}")
+        if not 0.0 <= imbalance_strength <= 0.5:
+            raise ValueError("imbalance_strength must be between 0 and 0.5")
 
         self.data_dir = Path(data_dir)
         self.trades_dir = Path(trades_dir) if trades_dir is not None else None
@@ -120,6 +136,7 @@ class RealOrderbookEnv(gym.Env):
         self.residual_continuous = bool(residual_continuous)
         self.residual_variant = residual_variant
         self.sequence_length = int(sequence_length)
+        self.imbalance_strength = float(imbalance_strength)
         self.base_strategy = InventorySkewStrategy(
             threshold=0.25,
             spread_bps=base_spread_bps,
@@ -168,6 +185,20 @@ class RealOrderbookEnv(gym.Env):
         self.ask_fill_count = 0
         self.total_fill_count = 0
         self.inventory_penalty_total = 0.0
+        self.active_quote_seconds = 0
+        self.active_quote_side_seconds = 0
+        self.fill_event_count = 0
+        self.filled_side_count = 0
+        self.filled_base_quantity = 0.0
+        self.submitted_base_quantity = 0.0
+        self.orders_created = 0
+        self.orders_preserved = 0
+        self.orders_replaced = 0
+        self.orders_cancelled = 0
+        self._order_age_seconds_total = 0.0
+        self._queue_ahead_at_fill_total = 0.0
+        self._orders: dict[str, RestingOrder] = {}
+        self._fill_records: list[dict[str, float]] = []
         self._data: dict[str, np.ndarray] = {}
         self._trade_data: dict[str, np.ndarray] = {}
         self._mid_returns = np.array([], dtype=float)
@@ -261,6 +292,20 @@ class RealOrderbookEnv(gym.Env):
         self.ask_fill_count = 0
         self.total_fill_count = 0
         self.inventory_penalty_total = 0.0
+        self.active_quote_seconds = 0
+        self.active_quote_side_seconds = 0
+        self.fill_event_count = 0
+        self.filled_side_count = 0
+        self.filled_base_quantity = 0.0
+        self.submitted_base_quantity = 0.0
+        self.orders_created = 0
+        self.orders_preserved = 0
+        self.orders_replaced = 0
+        self.orders_cancelled = 0
+        self._order_age_seconds_total = 0.0
+        self._queue_ahead_at_fill_total = 0.0
+        self._orders = {}
+        self._fill_records = []
         self._recent_fills.clear()
 
         return self._observation(), self._info(
@@ -323,38 +368,35 @@ class RealOrderbookEnv(gym.Env):
             }
             bid_quote, ask_quote = self._quote_prices(quote_action, current)
         previous_equity = self.equity
-        bid_fill_size = 0.0
-        ask_fill_size = 0.0
         fee_paid_step = 0.0
         turnover_step = 0.0
-        bid_queue_ahead = 0.0
-        ask_queue_ahead = 0.0
-
-        quote_active = bid_quote is not None or ask_quote is not None
+        self._synchronize_order("bid", bid_quote, bid_requested_size, current)
+        self._synchronize_order("ask", ask_quote, ask_requested_size, current)
+        bid_order = self._orders.get("bid")
+        ask_order = self._orders.get("ask")
+        bid_quote = bid_order.price if bid_order is not None else None
+        ask_quote = ask_order.price if ask_order is not None else None
+        bid_queue_ahead = bid_order.queue_ahead if bid_order is not None else 0.0
+        ask_queue_ahead = ask_order.queue_ahead if ask_order is not None else 0.0
+        quote_active = bid_order is not None or ask_order is not None
+        active_sides = int(bid_order is not None) + int(ask_order is not None)
+        self.active_quote_seconds += int(quote_active)
+        self.active_quote_side_seconds += active_sides
+        self._order_age_seconds_total += sum(
+            self.step_count - order.creation_step for order in self._orders.values()
+        )
         buy_capacity = max(0.0, self.max_inventory_btc - self.inventory)
         sell_capacity = max(0.0, self.max_inventory_btc + self.inventory)
-        if self._trade_data and bid_quote is not None:
-            sell_volume = float(self._trade_data["sell_volume"][following])
-            min_sell_price = float(self._trade_data["min_sell_price"][following])
-            bid_queue_ahead = self._visible_size("bid", bid_quote, current) * self.queue_fraction
-            if sell_volume > bid_queue_ahead and np.isfinite(min_sell_price):
-                if min_sell_price <= bid_quote:
-                    bid_fill_size = min(
-                        bid_requested_size,
-                        sell_volume - bid_queue_ahead,
-                        buy_capacity,
-                    )
-        if self._trade_data and ask_quote is not None:
-            buy_volume = float(self._trade_data["buy_volume"][following])
-            max_buy_price = float(self._trade_data["max_buy_price"][following])
-            ask_queue_ahead = self._visible_size("ask", ask_quote, current) * self.queue_fraction
-            if buy_volume > ask_queue_ahead and np.isfinite(max_buy_price):
-                if max_buy_price >= ask_quote:
-                    ask_fill_size = min(
-                        ask_requested_size,
-                        buy_volume - ask_queue_ahead,
-                        sell_capacity,
-                    )
+        bid_fill_size, bid_queue_at_fill = self._consume_order(
+            "bid",
+            following,
+            buy_capacity,
+        )
+        ask_fill_size, ask_queue_at_fill = self._consume_order(
+            "ask",
+            following,
+            sell_capacity,
+        )
 
         bid_filled = bid_fill_size > 1e-12
         ask_filled = ask_fill_size > 1e-12
@@ -365,6 +407,13 @@ class RealOrderbookEnv(gym.Env):
             self.inventory += bid_fill_size
             turnover_step += notional
             fee_paid_step += fee
+            self._record_fill(
+                side="bid",
+                price=bid_quote,
+                quantity=bid_fill_size,
+                fill_index=following,
+                queue_ahead=bid_queue_at_fill,
+            )
         if ask_filled and ask_quote is not None:
             notional = ask_quote * ask_fill_size
             fee = notional * self.maker_fee
@@ -372,12 +421,26 @@ class RealOrderbookEnv(gym.Env):
             self.inventory -= ask_fill_size
             turnover_step += notional
             fee_paid_step += fee
+            self._record_fill(
+                side="ask",
+                price=ask_quote,
+                quantity=ask_fill_size,
+                fill_index=following,
+                queue_ahead=ask_queue_at_fill,
+            )
 
         self.total_fees += fee_paid_step
         self.total_turnover += turnover_step
         self.bid_fill_count += int(bid_filled)
         self.ask_fill_count += int(ask_filled)
         self.total_fill_count += int(bid_filled) + int(ask_filled)
+        self.fill_event_count += int(bid_filled or ask_filled)
+        self.filled_side_count += int(bid_filled) + int(ask_filled)
+        self.filled_base_quantity += bid_fill_size + ask_fill_size
+        self._queue_ahead_at_fill_total += (
+            (bid_queue_at_fill if bid_filled else 0.0)
+            + (ask_queue_at_fill if ask_filled else 0.0)
+        )
         fill_feature = (int(bid_filled) + int(ask_filled)) / 2.0
         self._recent_fills.append(fill_feature)
         self._fill_history[following] = fill_feature
@@ -393,14 +456,12 @@ class RealOrderbookEnv(gym.Env):
             * self.inventory_penalty_multiplier
             * inventory_ratio**2
         )
-        downside_inventory_penalty_step = 0.0
-        if self.residual_continuous:
-            downside_inventory_penalty_step = (
-                self.INVENTORY_PENALTY
-                * self.inventory_penalty_multiplier
-                * 5.0
-                * max(abs(inventory_ratio) - 0.8, 0.0) ** 2
-            )
+        downside_inventory_penalty_step = (
+            self.INVENTORY_PENALTY
+            * self.inventory_penalty_multiplier
+            * 5.0
+            * max(abs(inventory_ratio) - 0.8, 0.0) ** 2
+        )
         inventory_penalty_step += downside_inventory_penalty_step
         self.inventory_penalty_total += inventory_penalty_step
         raw_pnl_step = self.equity - previous_equity + fee_paid_step
@@ -533,6 +594,12 @@ class RealOrderbookEnv(gym.Env):
         bid_multiplier, ask_multiplier = self.QUOTE_WIDTH_MULTIPLIERS[quote_action]
         bid_multiplier *= bid_spread_multiplier
         ask_multiplier *= ask_spread_multiplier
+        imbalance = float(
+            np.clip(2.0 * self._data["orderbook_imbalance"][index] - 1.0, -1.0, 1.0)
+        )
+        # Positive imbalance narrows bids and widens asks; clipping keeps quotes passive.
+        bid_multiplier *= float(np.clip(1.0 - self.imbalance_strength * imbalance, 0.5, 1.5))
+        ask_multiplier *= float(np.clip(1.0 + self.imbalance_strength * imbalance, 0.5, 1.5))
         mid_price = float(self._data["mid_price"][index])
         best_bid = float(self._data["bid_price_1"][index])
         best_ask = float(self._data["ask_price_1"][index])
@@ -641,6 +708,156 @@ class RealOrderbookEnv(gym.Env):
                 return max(0.0, float(self._data[f"{side}_size_{level}"][index]))
         return 0.0
 
+    def _synchronize_order(
+        self,
+        side: str,
+        desired_price: float | None,
+        desired_quantity: float,
+        index: int,
+    ) -> None:
+        """Keep priority for unchanged quotes; replace any larger same-price intent."""
+        existing = self._orders.get(side)
+        if desired_price is None or desired_quantity <= 1e-12:
+            if existing is not None:
+                self.orders_cancelled += 1
+                del self._orders[side]
+            return
+        if existing is None:
+            self._create_order(side, desired_price, desired_quantity, index)
+            return
+        same_price = np.isclose(
+            existing.price,
+            desired_price,
+            rtol=0.0,
+            atol=max(abs(desired_price) * 1e-10, 1e-12),
+        )
+        if not same_price:
+            self.orders_replaced += 1
+            self._create_order(side, desired_price, desired_quantity, index)
+            return
+        if desired_quantity <= existing.requested_quantity + 1e-12:
+            existing.remaining_quantity = min(existing.remaining_quantity, desired_quantity)
+            existing.requested_quantity = desired_quantity
+            self.orders_preserved += 1
+            return
+
+        # Added same-price quantity has no artificial queue priority: replace the quote.
+        self.orders_replaced += 1
+        self._create_order(side, desired_price, desired_quantity, index)
+
+    def _create_order(
+        self,
+        side: str,
+        price: float,
+        quantity: float,
+        index: int,
+    ) -> None:
+        self._orders[side] = RestingOrder(
+            side=side,
+            price=price,
+            remaining_quantity=quantity,
+            requested_quantity=quantity,
+            queue_ahead=self._visible_size(side, price, index) * self.queue_fraction,
+            creation_step=self.step_count,
+        )
+        self.orders_created += 1
+        self.submitted_base_quantity += quantity
+
+    def _consume_order(
+        self,
+        side: str,
+        following: int,
+        inventory_capacity: float,
+    ) -> tuple[float, float]:
+        order = self._orders.get(side)
+        if order is None or not self._trade_data:
+            return 0.0, 0.0
+        if side == "bid":
+            opposing_volume = float(self._trade_data["sell_volume"][following])
+            opposing_price = float(self._trade_data["min_sell_price"][following])
+            crosses_quote = np.isfinite(opposing_price) and opposing_price <= order.price
+        else:
+            opposing_volume = float(self._trade_data["buy_volume"][following])
+            opposing_price = float(self._trade_data["max_buy_price"][following])
+            crosses_quote = np.isfinite(opposing_price) and opposing_price >= order.price
+        if not crosses_quote or opposing_volume <= 0.0:
+            return 0.0, 0.0
+
+        queue_at_fill = order.queue_ahead
+        queue_consumed = min(opposing_volume, order.queue_ahead)
+        order.queue_ahead -= queue_consumed
+        available_volume = opposing_volume - queue_consumed
+        fill_quantity = min(order.remaining_quantity, available_volume, inventory_capacity)
+        order.remaining_quantity -= fill_quantity
+        if order.remaining_quantity <= 1e-12:
+            del self._orders[side]
+        return fill_quantity, queue_at_fill
+
+    def _record_fill(
+        self,
+        *,
+        side: str,
+        price: float,
+        quantity: float,
+        fill_index: int,
+        queue_ahead: float,
+    ) -> None:
+        mid_at_fill = float(self._data["mid_price"][fill_index])
+        self._fill_records.append(
+            {
+                "side": 1.0 if side == "bid" else -1.0,
+                "price": price,
+                "quantity": quantity,
+                "mid_at_fill": mid_at_fill,
+                "mid_after_1s": self._future_mid(fill_index, 1),
+                "mid_after_5s": self._future_mid(fill_index, 5),
+                "mid_after_30s": self._future_mid(fill_index, 30),
+                "queue_ahead": queue_ahead,
+            }
+        )
+
+    def _future_mid(self, index: int, horizon: int) -> float:
+        future = index + horizon
+        if future >= len(self._data["mid_price"]):
+            return float("nan")
+        return float(self._data["mid_price"][future])
+
+    def execution_diagnostics(self) -> dict[str, float]:
+        """Return terminal execution decomposition for completed-episode diagnostics."""
+        terminal_mid = float(self._data["mid_price"][self.current_index])
+        spread_capture = 0.0
+        inventory_contribution = 0.0
+        markouts = {1: 0.0, 5: 0.0, 30: 0.0}
+        markout_quantities = {1: 0.0, 5: 0.0, 30: 0.0}
+        for record in self._fill_records:
+            direction = record["side"]
+            quantity = record["quantity"]
+            fill_mid = record["mid_at_fill"]
+            price = record["price"]
+            spread_capture += direction * (fill_mid - price) * quantity
+            inventory_contribution += direction * (terminal_mid - fill_mid) * quantity
+            for horizon in markouts:
+                future_mid = record[f"mid_after_{horizon}s"]
+                if np.isfinite(future_mid):
+                    markouts[horizon] += direction * (future_mid - price) * quantity
+                    markout_quantities[horizon] += quantity
+        total_pnl = self.equity - self.initial_cash
+        decomposition = spread_capture + inventory_contribution - self.total_fees
+        return {
+            "spread_capture": spread_capture,
+            "side_adjusted_markout_1s": markouts[1],
+            "side_adjusted_markout_5s": markouts[5],
+            "side_adjusted_markout_30s": markouts[30],
+            "markout_1s_quantity": markout_quantities[1],
+            "markout_5s_quantity": markout_quantities[5],
+            "markout_30s_quantity": markout_quantities[30],
+            "adverse_selection_contribution": markouts[5],
+            "inventory_mark_to_market_contribution": inventory_contribution,
+            "realized_plus_terminal_inventory_pnl": total_pnl,
+            "total_equity_pnl": total_pnl,
+            "pnl_reconciliation_error": total_pnl - decomposition,
+        }
+
     def _execution_markout(
         self,
         index: int,
@@ -716,6 +933,7 @@ class RealOrderbookEnv(gym.Env):
             "bid_spread_multiplier": residual["bid_spread_multiplier"],
             "ask_spread_multiplier": residual["ask_spread_multiplier"],
             "participation_probability": residual["participation_probability"],
+            "imbalance_strength": self.imbalance_strength,
             "bid_quote": bid_quote,
             "ask_quote": ask_quote,
             "bid_filled": bid_filled,
@@ -737,6 +955,41 @@ class RealOrderbookEnv(gym.Env):
             "bid_fill_count": self.bid_fill_count,
             "ask_fill_count": self.ask_fill_count,
             "total_fill_count": self.total_fill_count,
+            "active_quote_seconds": self.active_quote_seconds,
+            "active_quote_side_seconds": self.active_quote_side_seconds,
+            "fill_event_count": self.fill_event_count,
+            "filled_side_count": self.filled_side_count,
+            "filled_base_quantity": self.filled_base_quantity,
+            "submitted_base_quantity": self.submitted_base_quantity,
+            "fill_event_rate": (
+                self.fill_event_count / self.active_quote_seconds
+                if self.active_quote_seconds
+                else 0.0
+            ),
+            "quoted_side_fill_rate": (
+                self.filled_side_count / self.active_quote_side_seconds
+                if self.active_quote_side_seconds
+                else 0.0
+            ),
+            "volume_fill_ratio": (
+                self.filled_base_quantity / self.submitted_base_quantity
+                if self.submitted_base_quantity > 0.0
+                else 0.0
+            ),
+            "orders_created": self.orders_created,
+            "orders_preserved": self.orders_preserved,
+            "orders_replaced": self.orders_replaced,
+            "orders_cancelled": self.orders_cancelled,
+            "average_order_age_seconds": (
+                self._order_age_seconds_total / self.active_quote_side_seconds
+                if self.active_quote_side_seconds
+                else 0.0
+            ),
+            "average_queue_ahead_at_fill": (
+                self._queue_ahead_at_fill_total / self.filled_side_count
+                if self.filled_side_count
+                else 0.0
+            ),
             "inventory_penalty_total": self.inventory_penalty_total,
             "markout_1s": markout_1s,
             "markout_10s": markout_10s,

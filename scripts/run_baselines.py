@@ -95,6 +95,7 @@ def print_comparison(results: dict[str, AggregateMetrics]) -> None:
         "max_abs_inventory",
         "mean_abs_inventory",
         "final_inventory",
+        "number_of_steps",
         "quote_rate",
         "fill_rate",
     ]
@@ -109,6 +110,7 @@ def print_comparison(results: dict[str, AggregateMetrics]) -> None:
                 "max_abs_inventory": format_summary(**row["max_abs_inventory"]),
                 "mean_abs_inventory": format_summary(**row["mean_abs_inventory"]),
                 "final_inventory": format_summary(**row["final_inventory"]),
+                "number_of_steps": format_summary(**row["number_of_steps"]),
                 "quote_rate": format_summary(**row["quote_rate"]),
                 "fill_rate": format_summary(**row["fill_rate"]),
             }
