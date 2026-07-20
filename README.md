@@ -1,134 +1,84 @@
 # RL for Market Making
 
-A compact quant research project for market-making experiments with inventory risk control.
-The repository includes mock mechanics, a listing-driven Bybit BTCUSDT Top-10 orderbook pipeline,
-one-second trade aggregation, a real-data replay environment, rule-based baselines, and a minimal
-PPO experiment. `hftbacktest` integration is not part of the current working path.
+Исследовательский проект по маркет-мейкингу BTCUSDT Perpetual на исторических
+данных Bybit. Задача — честно сравнить простые правила и RL-агентов при одинаковом
+исполнении, контроле инвентаря и хронологическом разделении данных.
 
-## Project Layout
+## Данные
 
-```text
-.
-├── configs/
-│   └── env_mock.yaml
-├── data/
-│   └── processed/bybit/orderbook/   # ignored local parquet output
-├── scripts/
-│   ├── check_orderbook_ready.py
-│   ├── download_convert_orderbook_range.py
-│   ├── run_baselines.py
-│   ├── run_mock_env.py
-│   ├── run_real_orderbook_baselines.py
-│   ├── run_real_experiment.py
-│   └── smoke_test.py
-├── src/rl_mm/
-│   ├── backtest/
-│   ├── data/
-│   ├── env/
-│   └── strategies/
-├── tests/
-├── Dockerfile
-├── Makefile
-├── pyproject.toml
-└── requirements.txt
-```
+Используются дневные parquet-файлы за 2025 год: Top-10 стакан с частотой 1 секунда
+и сделки, агрегированные до 1 секунды. Разбиение не перемешивается:
 
-## Setup
+- обучение: 2025-01-01 — 2025-10-01, 274 дня;
+- валидация: 2025-10-02 — 2025-11-06, 36 дней;
+- тест: 2025-11-07 — 2025-12-31, 55 дней.
+
+Локальные данные лежат в `data/processed/bybit/` и не отслеживаются Git.
+
+## Среда
+
+`RealOrderbookEnv` воспроизводит стакан и реальные потоки сделок. Пассивная заявка
+исполняется только после прохождения очереди видимого объема; поддерживаются
+частичные исполнения, сохраняющиеся между шагами заявки, лимит инвентаря,
+комиссии, денежный счет и mark-to-market equity. Это приближенная модель очереди,
+а не биржевой симулятор уровня событий.
+
+## Стратегии
+
+- adaptive fixed spread — симметричные котировки с фильтрами рынка;
+- adaptive inventory skew — смещение котировок для снижения инвентаря;
+- Avellaneda–Stoikov — цена резервирования и спред по инвентарю и волатильности;
+- PPO — ранее выбранная дискретная политика;
+- residual SAC — непрерывные поправки к inventory-skew baseline.
+
+Для Avellaneda–Stoikov параметры `gamma` и `k` выбираются только на 36
+валидационных окнах. В финальном запуске выбраны `gamma=0.01`, `k=1`.
+
+## Итоговый тест
+
+Ниже результаты на одинаковых 55 часовых окнах, `maker_fee=0`,
+`queue_fraction=0.25`. Markout указан как средний side-adjusted вклад в USDT за
+час. Максимальная просадка — средняя максимальная просадка часового эпизода.
+
+| Стратегия | PnL/час | PnL всего | Std PnL | Прибыльных часов | Max DD | Quote rate | Fill rate | Turnover/час | Max inventory | Markout 1s | Markout 5s | Markout 30s |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Adaptive fixed spread | 0.0745 | 4.0999 | 0.8683 | 18/55 | 0.4538 | 1.000000 | 0.000409 | 134.49 | 0.0050 | 0.0151 | 0.0135 | 0.0164 |
+| Adaptive inventory skew | 0.0745 | 4.0999 | 0.8683 | 18/55 | 0.4538 | 1.000000 | 0.000409 | 134.49 | 0.0050 | 0.0151 | 0.0135 | 0.0164 |
+| Avellaneda–Stoikov | -3.6057 | -198.3147 | 6.3762 | 13/55 | 7.2417 | 1.000000 | 0.094848 | 31205.12 | 0.0200 | -2.4565 | -2.9006 | -2.8573 |
+| Previous PPO | -1.7929 | -98.6108 | 5.0961 | 17/55 | 5.1761 | 1.000000 | 0.121566 | 14082.53 | 0.0168 | -1.1279 | -1.2365 | -1.1875 |
+| Residual SAC | -0.0290 | -1.5942 | 0.3903 | 17/55 | 0.2222 | 0.568480 | 0.000343 | 57.00 | 0.0028 | 0.0032 | 0.0009 | -0.0040 |
+
+Простые адаптивные baselines дали лучший итог, но прибыль была только в 18 из 55
+часов. Residual SAC снизил риск и оборот, однако остался немного убыточным.
+Avellaneda–Stoikov и PPO торговали слишком активно и получили отрицательный
+markout. Это эксперимент без комиссий и не свидетельство прибыльности в реальной
+торговле.
+
+## Команды
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 make install
-make smoke
-```
-
-Docker remains available for a clean smoke-test environment:
-
-```bash
-docker build -t rl-mm .
-docker run --rm rl-mm
-```
-
-## Tests
-
-Run the active test suite and lint checks:
-
-```bash
 make test
 make lint
-```
-
-## Mock Market Making
-
-Run one deterministic mock episode or compare the fixed-spread and inventory-skew baselines:
-
-```bash
-make run-mock
-make baselines
-```
-
-Run the same rule-based baselines on processed BTCUSDT orderbook snapshots:
-
-```bash
-make real-baselines
-```
-
-Run the complete seven-day trade preparation, PPO training, and common-window evaluation smoke
-experiment:
-
-```bash
-make real-experiment-smoke
-```
-
-The full-year workflow remains explicit and resumable:
-
-```bash
-make real-trades-2025
-make train-real
-make eval-real
-```
-
-Processed trades are stored under `data/processed/bybit/trades/BTCUSDT/`. PPO models are local,
-ignored outputs under `models/` and are saved separately as `real_ppo_seed42.zip`,
-`real_ppo_seed100.zip`, and `real_ppo_seed200.zip`. Existing completed models are reused; pass
-`--force-train` directly to `run_real_experiment.py` only when deliberate retraining is needed.
-
-## Convert 2025 Orderbook Data
-
-The converter fetches the exact remote BTCUSDT archive listing, processes only listed files,
-streams each ZIP through the Top-10 parser, writes parquet atomically, and resumes by skipping
-completed dates:
-
-```bash
+make smoke
 make convert-orderbook-2025-listed-robust
-```
-
-To retry only dates whose parquet output is missing:
-
-```bash
 make repair-orderbook-2025
-```
-
-Raw archives are temporary unless explicitly retained. Processed daily parquet files are stored
-under:
-
-```text
-data/processed/bybit/orderbook/BTCUSDT/
-```
-
-Raw and processed market data are excluded from Git.
-
-## Dataset Readiness
-
-Validate 2025 coverage, schema consistency, timestamp ordering, duplicate timestamps, best
-bid/ask validity, spread, mid-price, and imbalance bounds:
-
-```bash
 make check-orderbook-ready
+make real-trades-2025
+make final-as-comparison
 ```
 
-The command prints a terminal summary and writes the small local report:
+`final-as-comparison` не переобучает модели: используются сохраненные локальные
+PPO и SAC.
 
-```text
-data/processed/bybit/orderbook/orderbook_ready_2025.json
-```
+## Структура
+
+- `configs/` — параметры mock-среды и протокол эксперимента;
+- `scripts/` — подготовка данных, проверки и запуск экспериментов;
+- `src/rl_mm/data/` — загрузка, агрегация и обработка рыночных данных;
+- `src/rl_mm/env/` — mock и real-data среды;
+- `src/rl_mm/strategies/` — rule-based baselines;
+- `src/rl_mm/backtest/` — общие метрики;
+- `tests/` — тесты данных, среды, стратегий и пайплайна;
+- `data/` — локальные raw/processed данные, исключенные из Git;
+- `models/` — локальные модели PPO/SAC, исключенные из Git.

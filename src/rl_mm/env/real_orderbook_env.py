@@ -208,6 +208,7 @@ class RealOrderbookEnv(gym.Env):
         self._inventory_history = np.array([], dtype=float)
         self._microprice_deviation = np.array([], dtype=float)
         self._top_level_imbalance = np.array([], dtype=float)
+        self._external_quotes: tuple[float | None, float | None, float, float] | None = None
 
     def reset(
         self,
@@ -307,6 +308,7 @@ class RealOrderbookEnv(gym.Env):
         self._orders = {}
         self._fill_records = []
         self._recent_fills.clear()
+        self._external_quotes = None
 
         return self._observation(), self._info(
             action=None,
@@ -328,7 +330,32 @@ class RealOrderbookEnv(gym.Env):
 
         current = self.current_index
         following = current + 1
-        if self.residual_continuous:
+        if self._external_quotes is not None:
+            bid_quote, ask_quote, bid_requested_size, ask_requested_size = (
+                self._external_quotes
+            )
+            self._validate_external_quotes(bid_quote, ask_quote, current)
+            quote_action = -1
+            size_action = -1
+            policy_action = np.array(
+                [
+                    np.nan if bid_quote is None else bid_quote,
+                    np.nan if ask_quote is None else ask_quote,
+                    bid_requested_size,
+                    ask_requested_size,
+                ],
+                dtype=float,
+            )
+            residual = {
+                "bid_spread_multiplier": 1.0,
+                "ask_spread_multiplier": 1.0,
+                "bid_size_multiplier": bid_requested_size / self.order_size_btc,
+                "ask_size_multiplier": ask_requested_size / self.order_size_btc,
+                "participation_probability": float(
+                    bid_quote is not None or ask_quote is not None
+                ),
+            }
+        elif self.residual_continuous:
             residual_action = self._normalize_residual_action(action)
             residual = self.map_residual_action(residual_action, self.residual_variant)
             quote_action = self._base_quote_action(current)
@@ -494,6 +521,56 @@ class RealOrderbookEnv(gym.Env):
                 following, bid_quote, ask_quote, bid_fill_size, ask_fill_size, 10
             ),
         )
+
+    def step_quotes(
+        self,
+        *,
+        bid_price: float | None,
+        ask_price: float | None,
+        bid_size: float,
+        ask_size: float,
+    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Submit explicit passive quotes through the standard execution path."""
+        if bid_size < 0.0 or ask_size < 0.0:
+            raise ValueError("quote sizes must be non-negative")
+        self._external_quotes = (
+            None if bid_price is None else float(bid_price),
+            None if ask_price is None else float(ask_price),
+            float(bid_size),
+            float(ask_size),
+        )
+        try:
+            return self.step(np.array([0, 1], dtype=np.int64))
+        finally:
+            self._external_quotes = None
+
+    def current_market_state(self) -> dict[str, float]:
+        """Return the current replay state without exposing future rows."""
+        if not self._data:
+            raise RuntimeError("reset() must be called before reading market state")
+        index = self.current_index
+        return {
+            "mid_price": float(self._data["mid_price"][index]),
+            "best_bid": float(self._data["bid_price_1"][index]),
+            "best_ask": float(self._data["ask_price_1"][index]),
+            "inventory": self.inventory,
+        }
+
+    def _validate_external_quotes(
+        self,
+        bid_price: float | None,
+        ask_price: float | None,
+        index: int,
+    ) -> None:
+        best_bid = float(self._data["bid_price_1"][index])
+        best_ask = float(self._data["ask_price_1"][index])
+        tolerance = 1e-9
+        if bid_price is not None and bid_price > best_bid + tolerance:
+            raise ValueError("external bid quote must be passive")
+        if ask_price is not None and ask_price < best_ask - tolerance:
+            raise ValueError("external ask quote must be passive")
+        if bid_price is not None and ask_price is not None and bid_price >= ask_price:
+            raise ValueError("external quotes must not cross")
 
     def _observation(self) -> np.ndarray:
         if self.residual_continuous:

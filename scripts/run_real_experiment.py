@@ -24,7 +24,12 @@ from torch.nn import functional as F
 
 from rl_mm.data.trades import prepare_trade_range
 from rl_mm.env import RealOrderbookEnv
-from rl_mm.strategies import BaseStrategy, FixedSpreadStrategy, InventorySkewStrategy
+from rl_mm.strategies import (
+    AvellanedaStoikovStrategy,
+    BaseStrategy,
+    FixedSpreadStrategy,
+    InventorySkewStrategy,
+)
 
 
 @dataclass(frozen=True)
@@ -154,6 +159,12 @@ class BaselineParameters:
 
 
 @dataclass(frozen=True)
+class AvellanedaStoikovParameters:
+    gamma: float
+    k: float
+
+
+@dataclass(frozen=True)
 class FillDiagnosticConfiguration:
     spread_bps: float
     imbalance_strength: float
@@ -217,6 +228,8 @@ ActionSelector = Callable[[np.ndarray, float, int], np.ndarray]
 
 BASELINE_SPREAD_CANDIDATES = (2.5, 5.0, 7.5, 10.0, 15.0)
 BASELINE_QUEUE_CANDIDATES = (0.25, 0.5, 0.75)
+AS_GAMMA_CANDIDATES = (0.001, 0.005, 0.01)
+AS_K_CANDIDATES = (0.1, 0.5, 1.0)
 PREVIOUS_FEE_EXPERIMENT = {
     "adaptive_fixed_spread": {"total_pnl": -35.4702, "gross_pnl": -12.7347},
     "adaptive_inventory_skew": {"total_pnl": -38.6765, "gross_pnl": -12.7915},
@@ -429,6 +442,28 @@ class AnchoredSAC(SAC):
             self.logger.record("train/ent_coef_loss", safe_mean(ent_coef_losses))
 
 
+def load_residual_sac_model(
+    path: Path,
+    *,
+    env: RealOrderbookEnv | None = None,
+    anchored: bool = False,
+) -> SAC:
+    """Load residual archives with the repository-local temporal extractor."""
+    policy_kwargs = {
+        "features_extractor_class": TemporalCNNExtractor,
+        "features_extractor_kwargs": {"features_dim": 32},
+        "net_arch": [64, 64],
+        "use_sde": False,
+    }
+    algorithm = AnchoredSAC if anchored else SAC
+    return algorithm.load(
+        path,
+        env=env,
+        device="cpu",
+        custom_objects={"policy_kwargs": policy_kwargs},
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the complete real-data experiment.")
     parser.add_argument(
@@ -443,6 +478,7 @@ def main() -> None:
             "residual",
             "residual-early-stop",
             "diagnose-fills",
+            "final-as-comparison",
         ],
         required=True,
     )
@@ -496,6 +532,10 @@ def main() -> None:
     ):
         raise ValueError("The first residual SAC experiment requires --maker-fee 0")
     if args.mode in {"residual", "residual-early-stop", "diagnose-fills"}:
+        args.queue_fraction = SEARCH_QUEUE_FRACTION
+    if args.mode == "final-as-comparison":
+        if not np.isclose(args.maker_fee, 0.0):
+            raise ValueError("final AS comparison requires --maker-fee 0")
         args.queue_fraction = SEARCH_QUEUE_FRACTION
     if args.mode == "residual-early-stop":
         if args.validation_interval < 1:
@@ -599,6 +639,14 @@ def main() -> None:
             trades_dir=trades_symbol_dir,
             split=split,
             maker_fee=args.maker_fee,
+        )
+        return
+
+    if args.mode == "final-as-comparison":
+        run_final_as_comparison(
+            orderbook_dir=args.orderbook_dir,
+            trades_dir=trades_symbol_dir,
+            split=split,
         )
         return
 
@@ -1461,7 +1509,11 @@ def train_residual_sac_early_stop(
             raise RuntimeError("Behaviour cloning accessed a non-train date")
 
         if resume_path.is_file():
-            model = AnchoredSAC.load(resume_path, env=env, device="cpu")
+            model = load_residual_sac_model(
+                resume_path,
+                env=env,
+                anchored=True,
+            )
             completed_timesteps = max(
                 int(seed_state.get("timesteps", 0)),
                 int(model.num_timesteps),
@@ -1649,7 +1701,7 @@ def train_residual_sac(
     learned_timesteps = 0
     imitation = None
     if warm_start_path is not None and warm_start_path.is_file():
-        model = SAC.load(warm_start_path, env=env, device="cpu")
+        model = load_residual_sac_model(warm_start_path, env=env)
         learned_timesteps = warm_start_timesteps
     else:
         model = SAC(
@@ -1953,7 +2005,7 @@ def run_residual_experiment(
     )
     previous_model, previous_candidate = previous_ppo_settings()
     fixed_actor = baseline_actor("fixed", base_parameters, False)
-    residual_model = SAC.load(RESIDUAL_FINAL_MODEL, device="cpu")
+    residual_model = load_residual_sac_model(RESIDUAL_FINAL_MODEL)
     results = {
         "adaptive_fixed_spread": evaluate_actor(
             fixed_actor.selector,
@@ -2148,7 +2200,7 @@ def run_residual_early_stop_experiment(
     )
     previous_model, previous_candidate = previous_ppo_settings()
     fixed_actor = baseline_actor("fixed", base_parameters, False)
-    residual_model = SAC.load(RESIDUAL_FINAL_MODEL, device="cpu")
+    residual_model = load_residual_sac_model(RESIDUAL_FINAL_MODEL)
     results = {
         "adaptive_fixed_spread": evaluate_actor(
             fixed_actor.selector,
@@ -2211,7 +2263,7 @@ def evaluate_residual_model(
     windows: list[EvaluationWindow],
     base_parameters: BaselineParameters,
 ) -> EvaluationSummary:
-    model = SAC.load(path, device="cpu")
+    model = load_residual_sac_model(path)
     return evaluate_actor(
         residual_selector(model),
         orderbook_dir=orderbook_dir,
@@ -2661,6 +2713,87 @@ def ppo_selector(model: PPO) -> ActionSelector:
     return select
 
 
+def avellaneda_stoikov_candidates() -> tuple[AvellanedaStoikovParameters, ...]:
+    return tuple(
+        AvellanedaStoikovParameters(gamma=gamma, k=k)
+        for gamma in AS_GAMMA_CANDIDATES
+        for k in AS_K_CANDIDATES
+    )
+
+
+def select_avellaneda_stoikov_parameters(
+    validation_results: dict[AvellanedaStoikovParameters, EvaluationSummary],
+) -> AvellanedaStoikovParameters:
+    """Select AS parameters from validation metrics only."""
+    if not validation_results:
+        raise ValueError("AS validation results are required for parameter selection")
+    return max(
+        validation_results,
+        key=lambda parameters: (
+            validation_score_components(validation_results[parameters])["score"],
+            -parameters.gamma,
+            -parameters.k,
+        ),
+    )
+
+
+def evaluate_avellaneda_stoikov(
+    parameters: AvellanedaStoikovParameters,
+    *,
+    orderbook_dir: Path,
+    trades_dir: Path,
+    windows: list[EvaluationWindow],
+    maker_fee: float = 0.0,
+    queue_fraction: float = SEARCH_QUEUE_FRACTION,
+) -> EvaluationSummary:
+    episodes = [
+        evaluate_window(
+            None,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            window=window,
+            maker_fee=maker_fee,
+            queue_fraction=queue_fraction,
+            avellaneda_stoikov=AvellanedaStoikovStrategy(
+                gamma=parameters.gamma,
+                k=parameters.k,
+            ),
+        )
+        for window in windows
+    ]
+    return aggregate_evaluation(episodes, windows)
+
+
+def tune_avellaneda_stoikov(
+    *,
+    orderbook_dir: Path,
+    trades_dir: Path,
+    windows: list[EvaluationWindow],
+) -> tuple[
+    AvellanedaStoikovParameters,
+    dict[AvellanedaStoikovParameters, EvaluationSummary],
+]:
+    results: dict[AvellanedaStoikovParameters, EvaluationSummary] = {}
+    print("Avellaneda-Stoikov validation (36 fixed one-hour windows):")
+    for parameters in avellaneda_stoikov_candidates():
+        summary = evaluate_avellaneda_stoikov(
+            parameters,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=windows,
+        )
+        results[parameters] = summary
+        components = validation_score_components(summary)
+        print(
+            f"  gamma={parameters.gamma:g} k={parameters.k:g} "
+            f"mean_pnl={components['mean_validation_pnl']:.6f} "
+            f"pnl_std={components['std_validation_pnl']:.6f} "
+            f"mean_max_drawdown={components['mean_max_drawdown']:.6f} "
+            f"score={components['score']:.6f}"
+        )
+    return select_avellaneda_stoikov_parameters(results), results
+
+
 def evaluate_actor(
     selector: ActionSelector,
     *,
@@ -2699,6 +2832,13 @@ def evaluate_actor(
         )
         for window in windows
     ]
+    return aggregate_evaluation(episodes, windows)
+
+
+def aggregate_evaluation(
+    episodes: list[EpisodeMetrics],
+    windows: list[EvaluationWindow],
+) -> EvaluationSummary:
     summaries = {}
     for metric_field in fields(EpisodeMetrics):
         values = np.asarray(
@@ -2718,7 +2858,7 @@ def evaluate_actor(
 
 
 def evaluate_window(
-    selector: ActionSelector,
+    selector: ActionSelector | None,
     *,
     orderbook_dir: Path,
     trades_dir: Path,
@@ -2734,6 +2874,7 @@ def evaluate_window(
     residual_variant: str = "legacy",
     base_parameters: BaselineParameters | None = None,
     imbalance_strength: float = 0.0,
+    avellaneda_stoikov: AvellanedaStoikovStrategy | None = None,
 ) -> EpisodeMetrics:
     day = window.day.isoformat()
     env = RealOrderbookEnv(
@@ -2777,8 +2918,20 @@ def evaluate_window(
     truncated = False
     while not truncated:
         previous_equity = env.equity
-        action = selector(observation, env.inventory, window.seed)
-        observation, reward, _, truncated, info = env.step(action)
+        if avellaneda_stoikov is None:
+            if selector is None:
+                raise ValueError("selector is required when AS strategy is not provided")
+            action = selector(observation, env.inventory, window.seed)
+            observation, reward, _, truncated, info = env.step(action)
+        else:
+            market = env.current_market_state()
+            quotes = avellaneda_stoikov.quote(**market)
+            observation, reward, _, truncated, info = env.step_quotes(
+                bid_price=quotes.bid_price,
+                ask_price=quotes.ask_price,
+                bid_size=quotes.bid_size,
+                ask_size=quotes.ask_size,
+            )
         total_reward += reward
         inventories.append(abs(env.inventory))
         equity_curve.append(env.equity)
@@ -2902,6 +3055,169 @@ def print_metrics_table(results: dict[str, EvaluationSummary]) -> None:
     print("  ".join("-" * widths[header] for header in headers))
     for row in rows:
         print("  ".join(row[header].ljust(widths[header]) for header in headers))
+
+
+def assert_identical_evaluation_windows(
+    results: dict[str, EvaluationSummary],
+) -> tuple[str, ...]:
+    """Reject comparisons that did not use one shared deterministic window set."""
+    if not results:
+        raise ValueError("At least one evaluation result is required")
+    window_sets = {summary.window_ids for summary in results.values()}
+    if len(window_sets) != 1:
+        raise ValueError("All strategies must use identical evaluation windows")
+    return next(iter(window_sets))
+
+
+def print_final_as_table(
+    results: dict[str, EvaluationSummary],
+    *,
+    hours: int,
+) -> None:
+    headers = (
+        "strategy",
+        "mean_pnl",
+        "total_pnl",
+        "pnl_std",
+        "profitable_hours",
+        "max_drawdown",
+        "quote_rate",
+        "fill_rate",
+        "turnover",
+        "max_inventory",
+        "markout_1s",
+        "markout_5s",
+        "markout_30s",
+    )
+    rows = []
+    for name, summary in results.items():
+        profitable_hours = round(
+            summary.profitable_episode_percentage.mean * hours / 100.0
+        )
+        rows.append(
+            {
+                "strategy": name,
+                "mean_pnl": f"{summary.total_pnl.mean:.4f}",
+                "total_pnl": f"{summary.total_pnl.mean * hours:.4f}",
+                "pnl_std": f"{summary.total_pnl.std:.4f}",
+                "profitable_hours": f"{profitable_hours}/{hours}",
+                "max_drawdown": f"{summary.maximum_drawdown.mean:.4f}",
+                "quote_rate": f"{summary.quote_rate.mean:.6f}",
+                "fill_rate": f"{summary.fill_rate.mean:.6f}",
+                "turnover": f"{summary.total_turnover.mean:.2f}",
+                "max_inventory": f"{summary.maximum_observed_inventory:.4f}",
+                "markout_1s": f"{summary.side_adjusted_markout_1s.mean:.4f}",
+                "markout_5s": f"{summary.side_adjusted_markout_5s.mean:.4f}",
+                "markout_30s": f"{summary.side_adjusted_markout_30s.mean:.4f}",
+            }
+        )
+    widths = {
+        header: max(len(header), *(len(row[header]) for row in rows))
+        for header in headers
+    }
+    print("  ".join(header.ljust(widths[header]) for header in headers))
+    print("  ".join("-" * widths[header] for header in headers))
+    for row in rows:
+        print("  ".join(row[header].ljust(widths[header]) for header in headers))
+
+
+def run_final_as_comparison(
+    *,
+    orderbook_dir: Path,
+    trades_dir: Path,
+    split: DatasetSplit,
+) -> tuple[AvellanedaStoikovParameters, dict[str, EvaluationSummary]]:
+    """Tune AS on validation and evaluate all frozen strategies once on test."""
+    if len(split.validation) != 36 or len(split.test) != 55:
+        raise ValueError("Final AS comparison requires the fixed 36/55 validation/test split")
+    validation_windows = build_evaluation_windows(
+        orderbook_dir=orderbook_dir,
+        symbol="BTCUSDT",
+        dates=split.validation,
+        seeds=[42],
+        minimum_episodes=36,
+    )
+    selected_as, _ = tune_avellaneda_stoikov(
+        orderbook_dir=orderbook_dir,
+        trades_dir=trades_dir,
+        windows=validation_windows,
+    )
+    print(f"selected_AS_parameters: gamma={selected_as.gamma:g} k={selected_as.k:g}")
+
+    test_windows = build_evaluation_windows(
+        orderbook_dir=orderbook_dir,
+        symbol="BTCUSDT",
+        dates=split.test,
+        seeds=[42],
+        minimum_episodes=55,
+    )
+    base_parameters = BaselineParameters(15.0, SEARCH_QUEUE_FRACTION, False, True)
+    fixed_actor = baseline_actor("fixed", base_parameters, False)
+    inventory_actor = baseline_actor("inventory", base_parameters, False)
+    previous_ppo, previous_candidate = previous_ppo_settings()
+    if not RESIDUAL_FINAL_MODEL.is_file():
+        raise FileNotFoundError(f"Missing residual SAC model: {RESIDUAL_FINAL_MODEL}")
+    residual_model = load_residual_sac_model(RESIDUAL_FINAL_MODEL)
+    results = {
+        "adaptive_fixed_spread": evaluate_actor(
+            fixed_actor.selector,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+            maker_fee=0.0,
+            queue_fraction=SEARCH_QUEUE_FRACTION,
+            quote_spread_bps=base_parameters.spread_bps,
+        ),
+        "adaptive_inventory_skew": evaluate_actor(
+            inventory_actor.selector,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+            maker_fee=0.0,
+            queue_fraction=SEARCH_QUEUE_FRACTION,
+            quote_spread_bps=base_parameters.spread_bps,
+        ),
+        "avellaneda_stoikov": evaluate_avellaneda_stoikov(
+            selected_as,
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+        ),
+        "previous_ppo": evaluate_actor(
+            ppo_selector(previous_ppo),
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+            maker_fee=0.0,
+            mandatory_quoting=True,
+            queue_fraction=SEARCH_QUEUE_FRACTION,
+            inventory_penalty_multiplier=previous_candidate.inventory_penalty_multiplier,
+            size_multipliers=previous_candidate.size_multipliers,
+            quote_offset_scale=previous_candidate.quote_offset_scale,
+        ),
+        "residual_sac": evaluate_actor(
+            residual_selector(residual_model),
+            orderbook_dir=orderbook_dir,
+            trades_dir=trades_dir,
+            windows=test_windows,
+            maker_fee=0.0,
+            queue_fraction=SEARCH_QUEUE_FRACTION,
+            quote_spread_bps=base_parameters.spread_bps,
+            residual_continuous=True,
+            residual_variant=RESIDUAL_EARLY_STOP_VARIANT,
+            base_parameters=base_parameters,
+        ),
+    }
+    assert_identical_evaluation_windows(results)
+    print("baseline_parameters: " + format_baseline_parameters(base_parameters))
+    print("maker_fee: 0.000000")
+    print(f"test_windows: {len(test_windows)} one-hour windows")
+    print("markouts are side-adjusted USDT contributions per one-hour window")
+    print_final_as_table(results, hours=len(test_windows))
+    print(
+        "This is a zero-fee research experiment and is not evidence of live profitability."
+    )
+    return selected_as, results
 
 
 def assert_neutral_residual_equivalence(

@@ -1,4 +1,4 @@
-.PHONY: install test lint smoke run-mock baselines real-baselines real-experiment-smoke real-trades-2025 train-real eval-real real-experiment-full train-real-zero-fee eval-real-zero-fee real-zero-fee optimize-real-zero-fee train-real-residual-sac train-real-residual-sac-early-stop diagnose-real-fills convert-orderbook-2025-listed-robust repair-orderbook-2025 check-orderbook-ready
+.PHONY: install test lint smoke run-mock baselines real-baselines real-experiment-smoke real-trades-2025 train-real eval-real real-experiment-full train-real-zero-fee eval-real-zero-fee real-zero-fee optimize-real-zero-fee train-real-residual-sac train-real-residual-sac-early-stop diagnose-real-fills final-as-comparison convert-orderbook-2025-listed-robust repair-orderbook-2025 check-orderbook-ready
 
 install:
 	python -m pip install --upgrade pip
@@ -57,6 +57,9 @@ train-real-residual-sac-early-stop:
 
 diagnose-real-fills:
 	python scripts/run_real_experiment.py --mode diagnose-fills --start-date 2025-01-01 --end-date 2025-12-31 --queue-fraction 0.25
+
+final-as-comparison:
+	python scripts/run_real_experiment.py --mode final-as-comparison --start-date 2025-01-01 --end-date 2025-12-31 --maker-fee 0 --queue-fraction 0.25
 
 convert-orderbook-2025-listed-robust:
 	python scripts/download_convert_orderbook_range.py --symbol BTCUSDT --start-date 2025-01-01 --end-date 2025-12-31 --output-dir data/processed/bybit/orderbook --raw-temp-dir data/raw/bybit/tmp/orderbook --depth 10 --frequency 1s --sleep-seconds 2 --retries 8 --connect-timeout 30 --read-timeout 300 --retry-backoff-seconds 30
